@@ -32,6 +32,13 @@ class Config(object):
     MAX_CONCURRENT_UPLOADS = int(os.environ.get("MAX_CONCURRENT_UPLOADS", "3"))
     MIN_TRANSFER_SPEED_MBPS = float(os.environ.get("MIN_TRANSFER_SPEED_MBPS", "4"))
     SPEED_CHECK_GRACE_SECONDS = int(os.environ.get("SPEED_CHECK_GRACE_SECONDS", "20"))
+    MAX_UPLOAD_SIZE = int(float(os.environ.get("MAX_UPLOAD_SIZE_GB", "2")) * 1024 * 1024 * 1024)
+    PREMIUM_SESSION_STRING = os.environ.get("PREMIUM_SESSION_STRING", "")
+    ENABLE_MEDIA_BRANDING = bool(int(os.environ.get("ENABLE_MEDIA_BRANDING", "1")))
+    WATERMARK_TEXT = os.environ.get("WATERMARK_TEXT", "@MNTGX")
+    METADATA_TEXT = os.environ.get("METADATA_TEXT", "Join @MNTGX in Telegram")
+    SEND_COVER_BEFORE_UPLOAD = bool(int(os.environ.get("SEND_COVER_BEFORE_UPLOAD", "1")))
+    CLEAN_DOWNLOADS = bool(int(os.environ.get("CLEAN_DOWNLOADS", "1")))
 class Txt(object):
     PROGRESS_BAR = """
 **{0}%**
@@ -42,15 +49,29 @@ class Txt(object):
 """
 
     START_TEXT = """
-👋 **Hello {0}!**
-I am a File Rename Bot. Send me any file and I'll rename it for you.
+🚀 **Welcome {0} to MNTGX Power Leech Bot**
+
+I can auto-fetch channel files, rename/brand them, leech direct links, torrents and magnets, add thumbnails/covers, and upload with rich progress controls.
+
+Use the buttons below or /help to explore commands.
 """
 
     HELP_TEXT = """
-**Available Commands:**
-/start - Start the bot
-/help - Show this help message
-/about - About this bot
+**Power Commands**
+/start - Rich welcome dashboard
+/help - Command list
+/mntgx - Admin feature panel
+/stats - Queue, speed and ETA
+/leech <url|magnet> - Download and upload direct/torrent/magnet links
+/torrent - Alias for /leech
+/magnet - Alias for /leech
+/addque <first> <last> - Bulk import Telegram messages
+/addsource, /removesource, /listsources - Manage source channels
+/addtarget, /removetarget, /listtargets - Manage destinations
+/addremname, /listremname - Manage rename cleanup tokens
+/cleanque confirm - Clear pending queue
+/requeue - Resume persisted jobs
+/ping - Health check
 """
 
     ABOUT_TEXT = """
