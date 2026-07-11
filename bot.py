@@ -1,5 +1,5 @@
-import os
 from pyrogram import Client
+from pyrogram.types import BotCommand
 from aiohttp import web
 from config import Config
 from plugins.file_rename import start_worker
@@ -15,7 +15,7 @@ class Bot(Client):
             api_id=Config.API_ID,
             api_hash=Config.API_HASH,
             bot_token=Config.BOT_TOKEN,
-            workers=250,
+            workers=Config.PYROGRAM_WORKERS,
             plugins={"root": "plugins"},
             sleep_threshold=15,
         )
@@ -28,11 +28,18 @@ class Bot(Client):
     async def start(self):
         await super().start()
 
-        # Start background worker
-        start_worker(self)
-
         # Bot information
         me = await self.get_me()
+        await self.set_bot_commands([
+            BotCommand("start", "Open the rich dashboard"),
+            BotCommand("help", "Show all commands"),
+            BotCommand("mntgx", "Admin feature panel"),
+            BotCommand("leech", "Leech direct/torrent/magnet links"),
+            BotCommand("stats", "Queue and speed stats"),
+            BotCommand("addque", "Bulk import Telegram messages"),
+            BotCommand("requeue", "Resume persisted jobs"),
+            BotCommand("ping", "Health check"),
+        ])
         print(f"{me.first_name} is running...✨️")
 
         # Setup web server for health checks
@@ -49,8 +56,11 @@ class Bot(Client):
         
         runner = web.AppRunner(app)
         await runner.setup()
-        self.site = web.TCPSite(runner, "0.0.0.0", 8080)
+        self.site = web.TCPSite(runner, "0.0.0.0", int(Config.PORT))
         await self.site.start()
+
+        # Start background workers only after the health server is bound, so Heroku can mark the dyno healthy quickly.
+        start_worker(self)
 
         # Notify admin if configured
         if hasattr(Config, 'ADMIN'):
