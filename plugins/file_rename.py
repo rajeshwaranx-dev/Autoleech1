@@ -8,6 +8,7 @@ from pyrogram.types import Message
 from pyrogram.errors import MessageNotModified, PeerIdInvalid, FloodWait
 
 from helper.utils import progress_for_pyrogram, download_thumbnail
+from helper.media_tools import add_video_branding, is_video_file, make_cover_image
 from helper.database import mnbots
 from config import Config
 
@@ -47,7 +48,7 @@ SOURCE_CHANNELS = [
 ]
 
 DESTINATION_CHANNELS = ["-1002490892111"]  # Where to upload renamed files
-MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024  # 2GB in bytes
+MAX_FILE_SIZE = Config.MAX_UPLOAD_SIZE  # Telegram bot default is 2GB; raise only with user-session upload support.
 ADMIN_ID = 1892771262  # Admin user ID for status updates
 MAX_CONCURRENT_DOWNLOADS = min(5, max(1, Config.MAX_CONCURRENT_DOWNLOADS))  # Hard cap at 5
 MAX_CONCURRENT_UPLOADS = min(5, max(1, Config.MAX_CONCURRENT_UPLOADS))  # Hard cap at 5
@@ -261,15 +262,29 @@ async def process_file(client: Client, message: Message):
             f"🆔 Message ID: `{message.id}`"
         )
         
+        upload_path = download_path
+        if Config.ENABLE_MEDIA_BRANDING and is_video_file(download_path):
+            branded_path = os.path.join(download_path_base, f"branded_{unique_name}")
+            await edit_admin_message(status_msg, "🎨 **Adding watermark + metadata...**")
+            upload_path = await add_video_branding(download_path, branded_path, Config.WATERMARK_TEXT, Config.METADATA_TEXT)
+
+        cover_file = os.path.join(download_path_base, f"cover_{message.id}.jpg")
+        cover = make_cover_image(cover_file, new_name, thumb if thumb and os.path.exists(thumb_file) else None, Config.METADATA_TEXT)
+
         # Upload to destination channel(s)
         ul_start = time.time()
         async with upload_semaphore:
             for target_chat in DESTINATION_CHANNELS:
+                if Config.SEND_COVER_BEFORE_UPLOAD and cover:
+                    await run_with_floodwait_retry(
+                        lambda chat_id=target_chat: client.send_photo(chat_id=chat_id, photo=cover, caption="🖼️ **Cover Preview**\n" + caption),
+                        task_name=f"Upload cover {message.id} -> {target_chat}",
+                    )
                 if message.video:
                     await run_with_floodwait_retry(
                         lambda chat_id=target_chat: client.send_video(
                             chat_id=chat_id,
-                            video=download_path,
+                            video=upload_path,
                             caption=caption,
                             file_name=new_name,
                             thumb=thumb if thumb and os.path.exists(thumb_file) else None,
@@ -292,7 +307,7 @@ async def process_file(client: Client, message: Message):
                     await run_with_floodwait_retry(
                         lambda chat_id=target_chat: client.send_document(
                             chat_id=chat_id,
-                            document=download_path,
+                            document=upload_path,
                             caption=caption,
                             file_name=new_name,
                             thumb=thumb if thumb and os.path.exists(thumb_file) else None,
@@ -351,7 +366,7 @@ async def process_file(client: Client, message: Message):
         print(f"[INFO] Active downloads: {current_active}/{MAX_CONCURRENT_DOWNLOADS}")
         
         # Cleanup files
-        for f in (download_path, thumb_file):
+        for f in (download_path, thumb_file, os.path.join(download_path_base, f"branded_{unique_name}"), os.path.join(download_path_base, f"cover_{message.id}.jpg")):
             if os.path.exists(f):
                 try:
                     os.remove(f)
