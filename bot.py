@@ -3,6 +3,7 @@ from pyrogram.types import BotCommand
 from aiohttp import web
 from config import Config
 from plugins.file_rename import start_worker
+from helper.stream_links import stream_handler
 from pyrogram import utils as pyroutils
 
 pyroutils.MIN_CHAT_ID = -999999999999
@@ -35,6 +36,7 @@ class Bot(Client):
             BotCommand("help", "Show all commands"),
             BotCommand("mntgx", "Admin feature panel"),
             BotCommand("leech", "Leech direct/torrent/magnet links"),
+            BotCommand("link", "Create a temporary Telegram file link"),
             BotCommand("stats", "Queue and speed stats"),
             BotCommand("addque", "Bulk import Telegram messages"),
             BotCommand("requeue", "Resume persisted jobs"),
@@ -46,7 +48,8 @@ class Bot(Client):
         app = web.Application()
         app.add_routes([
             web.get("/", self.health_check),
-            web.get("/health", self.health_check)
+            web.get("/health", self.health_check),
+            web.get("/dl/{token}/{file_name:.*}", lambda request: stream_handler(self, request)),
         ])
         
         # Additional web routes if WEBHOOK is enabled

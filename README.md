@@ -23,7 +23,8 @@ A Pyrogram-based Telegram downloader/leech bot optimized for Heroku/Docker. It m
 | `/start` | Open the rich dashboard. |
 | `/help` | Show command list. |
 | `/mntgx` | Admin feature panel. |
-| `/leech <url\|magnet>` | Leech direct, torrent, or magnet links. |
+| `/leech <url\|magnet>` | Leech direct, torrent, or magnet links. Also accepts URLs containing `torrent`. |
+| `/link` | Reply to Telegram media to create a temporary browser/FDM/1DM download link. |
 | `/torrent` / `/magnet` | Aliases for leeching. |
 | `/stats` | Queue, speed, and ETA stats. |
 | `/addque <first_msg_url> <last_msg_url>` | Bulk import Telegram messages. |
@@ -41,6 +42,8 @@ A Pyrogram-based Telegram downloader/leech bot optimized for Heroku/Docker. It m
 | `API_ID` | Yes | empty | Telegram API ID. |
 | `API_HASH` | Yes | empty | Telegram API hash. |
 | `BOT_TOKEN` | Yes | empty | Bot token from BotFather. |
+| `BASE_URL` | For `/link` | empty | Public app URL, e.g. `https://your-app.herokuapp.com`, used for temporary file links. |
+| `STREAM_LINK_TTL` | No | `21600` | Temporary file-link lifetime in seconds. |
 | `DB_URL` | Yes | empty | MongoDB connection string. |
 | `DB_NAME` | No | `Cluster0` | Mongo database name. |
 | `ADMIN` | No | `1892771262` | Space-separated admin user IDs. |
@@ -62,7 +65,7 @@ A Pyrogram-based Telegram downloader/leech bot optimized for Heroku/Docker. It m
 
 ## Torrent/Magnet Requirements
 
-Torrent and magnet support requires `aria2c` on the runtime image. Docker users should install `aria2`; Heroku users can add an apt buildpack and include `aria2`/`ffmpeg`, or use a stack/image that already includes them.
+Torrent and magnet support requires `aria2c` on the runtime image. The included Dockerfile installs `aria2`, `ffmpeg`, and fonts automatically. On Heroku, add the official apt buildpack before the Python buildpack so `Aptfile` installs `aria2`, `ffmpeg`, and `fonts-dejavu-core`. If `aria2c` is still missing, direct HTTP links fall back to the built-in downloader, but torrent and magnet jobs need aria2.
 
 ## 2GB+ Uploads
 
@@ -73,7 +76,7 @@ Telegram Bot API uploads are usually limited to 2GB. This repo exposes `MAX_UPLO
 1. Create a bot with BotFather and collect `BOT_TOKEN`.
 2. Create Telegram API credentials at `my.telegram.org`.
 3. Provision MongoDB and set `DB_URL`.
-4. Install Python requirements and system packages: `ffmpeg`, `aria2c`, and DejaVu fonts. On Heroku, add the official apt buildpack so `Aptfile` is installed.
+4. Install Python requirements and system packages: `ffmpeg`, `aria2c`, and DejaVu fonts. On Heroku, add `https://github.com/heroku/heroku-buildpack-apt` before the Python buildpack so `Aptfile` is installed. Set `BASE_URL` to your Heroku app URL to enable `/link`.
 5. Start with `python bot.py` or deploy with the included `Procfile`.
 
 ## Notes

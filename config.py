@@ -28,6 +28,8 @@ class Config(object):
     # Webhook response configuration     
     WEBHOOK = bool(int(os.environ.get("WEBHOOK", True)))
     PORT = os.environ.get("PORT", "8080") # Use 1 for True (instead of True/False)
+    BASE_URL = os.environ.get("BASE_URL", "")
+    STREAM_LINK_TTL = int(os.environ.get("STREAM_LINK_TTL", str(6 * 60 * 60)))
     PYROGRAM_WORKERS = min(64, max(8, int(os.environ.get("PYROGRAM_WORKERS", "24"))))
     MAX_CONCURRENT_DOWNLOADS = int(os.environ.get("MAX_CONCURRENT_DOWNLOADS", "2"))
     MAX_CONCURRENT_UPLOADS = int(os.environ.get("MAX_CONCURRENT_UPLOADS", "2"))
@@ -66,6 +68,7 @@ Use the buttons below or /help to explore commands.
 /mntgx - Admin feature panel
 /stats - Queue, speed and ETA
 /leech <url|magnet> - Download and upload direct/torrent/magnet links
+/link - Reply to Telegram media to create a temporary browser download link
 /torrent - Alias for /leech
 /magnet - Alias for /leech
 /addque <first> <last> - Bulk import Telegram messages
