@@ -28,17 +28,20 @@ class Config(object):
     # Webhook response configuration     
     WEBHOOK = bool(int(os.environ.get("WEBHOOK", True)))
     PORT = os.environ.get("PORT", "8080") # Use 1 for True (instead of True/False)
-    MAX_CONCURRENT_DOWNLOADS = int(os.environ.get("MAX_CONCURRENT_DOWNLOADS", "3"))
-    MAX_CONCURRENT_UPLOADS = int(os.environ.get("MAX_CONCURRENT_UPLOADS", "3"))
+    PYROGRAM_WORKERS = min(64, max(8, int(os.environ.get("PYROGRAM_WORKERS", "24"))))
+    MAX_CONCURRENT_DOWNLOADS = int(os.environ.get("MAX_CONCURRENT_DOWNLOADS", "2"))
+    MAX_CONCURRENT_UPLOADS = int(os.environ.get("MAX_CONCURRENT_UPLOADS", "2"))
     MIN_TRANSFER_SPEED_MBPS = float(os.environ.get("MIN_TRANSFER_SPEED_MBPS", "4"))
     SPEED_CHECK_GRACE_SECONDS = int(os.environ.get("SPEED_CHECK_GRACE_SECONDS", "20"))
     MAX_UPLOAD_SIZE = int(float(os.environ.get("MAX_UPLOAD_SIZE_GB", "2")) * 1024 * 1024 * 1024)
     PREMIUM_SESSION_STRING = os.environ.get("PREMIUM_SESSION_STRING", "")
-    ENABLE_MEDIA_BRANDING = bool(int(os.environ.get("ENABLE_MEDIA_BRANDING", "1")))
+    ENABLE_MEDIA_BRANDING = bool(int(os.environ.get("ENABLE_MEDIA_BRANDING", "0")))
     WATERMARK_TEXT = os.environ.get("WATERMARK_TEXT", "@MNTGX")
     METADATA_TEXT = os.environ.get("METADATA_TEXT", "Join @MNTGX in Telegram")
     SEND_COVER_BEFORE_UPLOAD = bool(int(os.environ.get("SEND_COVER_BEFORE_UPLOAD", "1")))
     CLEAN_DOWNLOADS = bool(int(os.environ.get("CLEAN_DOWNLOADS", "1")))
+    ARIA2_SPLIT = min(8, max(1, int(os.environ.get("ARIA2_SPLIT", "4"))))
+    FFMPEG_THREADS = min(2, max(1, int(os.environ.get("FFMPEG_THREADS", "1"))))
 class Txt(object):
     PROGRESS_BAR = """
 **{0}%**

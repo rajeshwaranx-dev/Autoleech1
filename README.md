@@ -46,16 +46,19 @@ A Pyrogram-based Telegram downloader/leech bot optimized for Heroku/Docker. It m
 | `ADMIN` | No | `1892771262` | Space-separated admin user IDs. |
 | `LOG_CHANNEL` | No | configured ID | Channel for logs if used. |
 | `GLOBAL_THUMBNAIL_URL` | No | bundled image | Used for upload thumbnails and cover cards. |
-| `MAX_CONCURRENT_DOWNLOADS` | No | `3` | Hard-capped at 5 workers. |
-| `MAX_CONCURRENT_UPLOADS` | No | `3` | Hard-capped at 5 uploads. |
+| `MAX_CONCURRENT_DOWNLOADS` | No | `2` | Hard-capped at 5 workers; keep low on Heroku eco/basic dynos. |
+| `MAX_CONCURRENT_UPLOADS` | No | `2` | Hard-capped at 5 uploads; keep low on Heroku eco/basic dynos. |
 | `MIN_TRANSFER_SPEED_MBPS` | No | `4` | Progress warning threshold. |
 | `MAX_UPLOAD_SIZE_GB` | No | `2` | Telegram bot uploads are normally limited to 2GB. |
 | `PREMIUM_SESSION_STRING` | No | empty | Reserved for user-session/premium deployments that can support larger uploads. |
-| `ENABLE_MEDIA_BRANDING` | No | `1` | Enable ffmpeg watermark/metadata. |
+| `ENABLE_MEDIA_BRANDING` | No | `0` | Enable ffmpeg watermark/metadata. Disabled by default to avoid Heroku memory kills; turn on for bigger dynos. |
 | `WATERMARK_TEXT` | No | `@MNTGX` | Center watermark text. |
 | `METADATA_TEXT` | No | `Join @MNTGX in Telegram` | Metadata and cover brand text. |
 | `SEND_COVER_BEFORE_UPLOAD` | No | `1` | Send cover preview before each file. |
 | `CLEAN_DOWNLOADS` | No | `1` | Remove leech job files after completion. |
+| `PYROGRAM_WORKERS` | No | `24` | Bounded 8-64 to avoid high memory usage. |
+| `ARIA2_SPLIT` | No | `4` | Bounded 1-8 connections per leech job. |
+| `FFMPEG_THREADS` | No | `1` | Bounded 1-2 ffmpeg threads for watermarking. |
 
 ## Torrent/Magnet Requirements
 
@@ -70,7 +73,7 @@ Telegram Bot API uploads are usually limited to 2GB. This repo exposes `MAX_UPLO
 1. Create a bot with BotFather and collect `BOT_TOKEN`.
 2. Create Telegram API credentials at `my.telegram.org`.
 3. Provision MongoDB and set `DB_URL`.
-4. Install Python requirements and system packages: `ffmpeg` and `aria2c`.
+4. Install Python requirements and system packages: `ffmpeg`, `aria2c`, and DejaVu fonts. On Heroku, add the official apt buildpack so `Aptfile` is installed.
 5. Start with `python bot.py` or deploy with the included `Procfile`.
 
 ## Notes

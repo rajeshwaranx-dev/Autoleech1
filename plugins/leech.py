@@ -14,9 +14,6 @@ from plugins.file_rename import is_admin_user, run_with_floodwait_retry, upload_
 
 LEECH_ROOT = Path("downloads/leech")
 LEECH_ROOT.mkdir(parents=True, exist_ok=True)
-MAGNET_PREFIX = "magnet:?"
-
-
 def leech_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📊 Stats", callback_data="stats"), InlineKeyboardButton("🧲 Leech Help", callback_data="leech_help")],
@@ -34,7 +31,8 @@ async def download_with_aria2(source: str, out_dir: Path, status: Message) -> Pa
         raise RuntimeError("aria2c is not installed. Add it to the Heroku buildpack/Docker image for torrent and magnet leeching.")
     cmd = [
         "aria2c", "--seed-time=0", "--summary-interval=5", "--console-log-level=warn",
-        "--max-connection-per-server=8", "--split=8", "--min-split-size=1M",
+        f"--max-connection-per-server={Config.ARIA2_SPLIT}", f"--split={Config.ARIA2_SPLIT}", "--min-split-size=1M",
+        "--bt-enable-lpd=false", "--enable-dht=false", "--enable-dht6=false",
         "--dir", str(out_dir), source,
     ]
     proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)

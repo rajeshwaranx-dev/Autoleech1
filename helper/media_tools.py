@@ -1,8 +1,9 @@
 import asyncio
 import os
-import shlex
 from pathlib import Path
 from typing import Optional
+
+from config import Config
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -37,8 +38,8 @@ async def add_video_branding(input_path: str, output_path: str, watermark_text: 
         "fontcolor=white@0.42:borderw=2:bordercolor=black@0.25"
     )
     cmd = [
-        "ffmpeg", "-y", "-i", input_path, "-vf", drawtext,
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
+        "ffmpeg", "-y", "-threads", str(Config.FFMPEG_THREADS), "-i", input_path, "-vf", drawtext,
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28", "-threads", str(Config.FFMPEG_THREADS),
         "-c:a", "copy", "-c:s", "copy",
         "-metadata", f"title={metadata_text}",
         "-metadata", f"comment={metadata_text}",
@@ -52,7 +53,7 @@ async def add_video_branding(input_path: str, output_path: str, watermark_text: 
     print(f"[WARN] Watermark encode failed, trying metadata-only copy: {err[-500:]}")
     copy_path = output_path
     code, _, err = await run_cmd(
-        "ffmpeg", "-y", "-i", input_path, "-map", "0", "-c", "copy",
+        "ffmpeg", "-y", "-threads", str(Config.FFMPEG_THREADS), "-i", input_path, "-map", "0", "-c", "copy",
         "-metadata", f"title={metadata_text}",
         "-metadata", f"comment={metadata_text}",
         "-metadata", f"artist={metadata_text}",
