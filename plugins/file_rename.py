@@ -47,7 +47,7 @@ SOURCE_CHANNELS = [
     "-1003793662163"
 ]
 
-DESTINATION_CHANNELS = ["-1002490892111"]  # Where to upload renamed files
+DESTINATION_CHANNELS = ["-1003582579076"]  # Where to upload renamed files
 MAX_FILE_SIZE = Config.MAX_UPLOAD_SIZE  # Telegram bot default is 2GB; raise only with user-session upload support.
 ADMIN_ID = 1892771262  # Admin user ID for status updates
 MAX_CONCURRENT_DOWNLOADS = min(5, max(1, Config.MAX_CONCURRENT_DOWNLOADS))  # Hard cap at 5
