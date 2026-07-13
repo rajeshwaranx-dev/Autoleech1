@@ -2,7 +2,10 @@
     "name": "Mn Auto Download",
     "description": "Mn Downloader Bot",
     "logo": "https://graph.org/file/2c62c5c158d42b0dc8deb.jpg",
-    "keywords": ["Mn Downloader Bot", "Mongo DB"],    
+    "keywords": [
+        "Mn Downloader Bot",
+        "Mongo DB"
+    ],
     "repository": "https://github.com/mntgx/Mn-downloader-bot",
     "env": {
         "API_ID": {
@@ -38,7 +41,7 @@
         "FORCE_SUB": {
             "description": "Your force sub channel user name without [@] ",
             "value": "",
-            "required": false 
+            "required": false
         },
         "BOT_TOKEN": {
             "description": "Your Bot Token From @BotFather",
@@ -46,28 +49,43 @@
             "required": true
         },
         "ADMIN": {
-            "description":"Add Your User ID multiple is use space to split",
+            "description": "Add Your User ID multiple is use space to split",
             "value": "",
             "required": true
         },
         "LOG_CHANNEL": {
-            "description":"Bot Log Sending Channel (just create a private channel and add bot to admin and take channel id to add this variable) ⚠️ id startswith -100 must",
+            "description": "Bot Log Sending Channel (just create a private channel and add bot to admin and take channel id to add this variable) \u26a0\ufe0f id startswith -100 must",
             "value": "",
-            "required": true          
+            "required": true
         },
         "DB_URL": {
             "description": "Your Mongo DB URL Obtained From mongodb.com",
             "value": "",
             "required": true
         },
-        "DB_NAME":{ 
-            "description":"Your Mongo DB Database Name ",
+        "DB_NAME": {
+            "description": "Your Mongo DB Database Name ",
             "value": "jishu-botz",
             "required": false
         },
         "START_PIC": {
             "description": "Your Bot start cmd Pic from @MT_TelegraPH_Bot",
             "value": "https://graph.org/file/77d2eddf9657a87acb881.jpg",
+            "required": false
+        },
+        "BASE_URL": {
+            "description": "Public Heroku app URL, e.g. https://your-app.herokuapp.com. Used for links and keep-alive.",
+            "value": "",
+            "required": false
+        },
+        "KEEP_ALIVE": {
+            "description": "Set to 1 to ping /health periodically and reduce Heroku web dyno sleeping; set 0 to disable.",
+            "value": "1",
+            "required": false
+        },
+        "KEEP_ALIVE_INTERVAL": {
+            "description": "Seconds between keep-alive pings. Default 600 (10 minutes).",
+            "value": "600",
             "required": false
         }
     },

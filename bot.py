@@ -1,3 +1,6 @@
+import asyncio
+
+import aiohttp
 from pyrogram import Client
 from pyrogram.types import BotCommand
 from aiohttp import web
@@ -21,10 +24,34 @@ class Bot(Client):
             sleep_threshold=15,
         )
         self.site = None
+        self.keep_alive_task = None
 
     async def health_check(self, request):
         """Simple health check endpoint"""
         return web.Response(text="OK", status=200)
+
+    async def keep_alive_loop(self):
+        """Periodically hit the public health URL so Heroku web dynos do not idle.
+
+        This needs BASE_URL or KEEP_ALIVE_URL to be set to the public Heroku app URL.
+        """
+        if not Config.KEEP_ALIVE or not Config.KEEP_ALIVE_URL:
+            print("[KEEPALIVE] Disabled. Set BASE_URL or KEEP_ALIVE_URL to enable Heroku anti-idle pings.")
+            return
+
+        url = f"{Config.KEEP_ALIVE_URL}/health"
+        timeout = aiohttp.ClientTimeout(total=20)
+        await asyncio.sleep(30)
+        while True:
+            try:
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.get(url) as response:
+                        print(f"[KEEPALIVE] {url} -> HTTP {response.status}")
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                print(f"[KEEPALIVE] Ping failed: {e}")
+            await asyncio.sleep(Config.KEEP_ALIVE_INTERVAL)
 
     async def start(self):
         await super().start()
@@ -68,6 +95,9 @@ class Bot(Client):
         # Start background workers only after the health server is bound, so Heroku can mark the dyno healthy quickly.
         start_worker(self)
 
+        # Keep Heroku web dynos warm by pinging the public health endpoint.
+        self.keep_alive_task = asyncio.create_task(self.keep_alive_loop())
+
         # Notify admin if configured
         if hasattr(Config, 'ADMIN'):
             try:
@@ -77,6 +107,12 @@ class Bot(Client):
 
     async def stop(self, *args):
         """Cleanup before stopping"""
+        if self.keep_alive_task:
+            self.keep_alive_task.cancel()
+            try:
+                await self.keep_alive_task
+            except asyncio.CancelledError:
+                pass
         if self.site:
             await self.site.stop()
         await super().stop()

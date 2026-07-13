@@ -43,7 +43,10 @@ A Pyrogram-based Telegram downloader/leech bot optimized for Heroku/Docker. It m
 | `API_ID` | Yes | empty | Telegram API ID. |
 | `API_HASH` | Yes | empty | Telegram API hash. |
 | `BOT_TOKEN` | Yes | empty | Bot token from BotFather. |
-| `BASE_URL` | Recommended | empty | Public app URL, e.g. `https://your-app.herokuapp.com`, used for `/link` and for the internal link-based Telegram fetch used by queue jobs and leech. If unset, internal fetches fall back to `http://127.0.0.1:$PORT` (works, but `/link` itself still needs a real public `BASE_URL` to be usable outside the dyno). |
+| `BASE_URL` | Recommended | empty | Public app URL, e.g. `https://your-app.herokuapp.com`, used for `/link`, internal fetches, and default Heroku keep-alive pings. If unset, internal fetches fall back to `http://127.0.0.1:$PORT`, but public `/link` and anti-idle pings need a real public URL. |
+| `KEEP_ALIVE` | No | `1` | Enables the Heroku anti-idle health ping loop when `BASE_URL` or `KEEP_ALIVE_URL` is set. Use `0` to disable. |
+| `KEEP_ALIVE_URL` | No | `BASE_URL` | Public URL to ping for keeping a Heroku web dyno warm. Set this to your app URL if `BASE_URL` is used for another domain. |
+| `KEEP_ALIVE_INTERVAL` | No | `600` | Seconds between keep-alive pings. Minimum is 60 seconds; 600 seconds keeps traffic below Heroku sleep thresholds for web dynos. |
 | `STREAM_LINK_TTL` | No | `21600` | Temporary file-link lifetime in seconds. |
 | `DB_URL` | Yes | empty | MongoDB connection string. |
 | `DB_NAME` | No | `Cluster0` | Mongo database name. |
@@ -63,6 +66,11 @@ A Pyrogram-based Telegram downloader/leech bot optimized for Heroku/Docker. It m
 | `PYROGRAM_WORKERS` | No | `24` | Bounded 8-64 to avoid high memory usage. |
 | `ARIA2_SPLIT` | No | `6` | Bounded 1-16 aria2c connections per torrent job. The parallel-range HTTP downloader and yt-dlp's fragment downloader read the same value but independently cap at 8 workers. |
 | `FFMPEG_THREADS` | No | `1` | Bounded 1-2 ffmpeg threads for watermarking. |
+
+
+## Heroku Sleep / Anti-Idle
+
+Heroku Eco/free-style web dynos can sleep when there is no web traffic. The bot now starts a background keep-alive loop after the `/health` web server is bound. Set `BASE_URL` (or `KEEP_ALIVE_URL`) to your public Heroku app URL, for example `https://your-app.herokuapp.com`; the bot will request `/health` every `KEEP_ALIVE_INTERVAL` seconds (default: 10 minutes). If you use a paid always-on dyno or an external uptime monitor, set `KEEP_ALIVE=0` to disable the internal pinger.
 
 ## Torrent/Magnet Requirements
 
