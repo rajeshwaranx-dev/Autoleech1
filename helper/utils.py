@@ -5,7 +5,7 @@ import os
 import shutil
 import time
 import aiohttp
-from config import Config, Txt
+from config import Config
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 # throttle threshold: 100 MiB
@@ -16,21 +16,44 @@ _last_update_time: dict[int, float] = {}
 _low_speed_hits: dict[int, int] = {}
 
 
-def _progress_bar(percentage: float, width: int = 18) -> str:
+def _progress_bar(percentage: float, width: int = 15) -> str:
+    """Telegram-friendly segmented bar matching the leech status UI."""
     filled = max(0, min(width, math.floor((percentage / 100) * width)))
-    return "█" * filled + "░" * (width - filled)
+    return "■" * filled + "□" * (width - filled)
 
 
-def _compact_bytes(size: float, suffix: str = "B") -> str:
+def _compact_bytes(size: float, suffix: str = "B", compact: bool = False) -> str:
     if not size:
         return "0B" if suffix == "B" else "0B/s"
-    units = ["", "Ki", "Mi", "Gi", "Ti"] if suffix == "B" else ["", "Ki", "Mi", "Gi", "Ti"]
+    if compact:
+        units = ["B", "KB", "MB", "GB", "TB"] if suffix == "B" else ["B/s", "KB/s", "MB/s", "GB/s", "TB/s"]
+    else:
+        units = ["B", "KiB", "MiB", "GiB", "TiB"] if suffix == "B" else ["B/s", "KiB/s", "MiB/s", "GiB/s", "TiB/s"]
     value = float(size)
     idx = 0
     while value >= 1024 and idx < len(units) - 1:
         value /= 1024
         idx += 1
-    return f"{value:.2f} {units[idx]}{suffix}" if idx else f"{value:.0f}{suffix}"
+    if idx == 0:
+        return units[idx].replace("B", "0B") if value == 0 else f"{value:.0f}{units[idx] if compact else ' ' + units[idx]}".replace(" B", "B")
+    sep = "" if compact else " "
+    return f"{value:.2f}{sep}{units[idx]}"
+
+
+def _ram_percent() -> str:
+    try:
+        values = {}
+        with open("/proc/meminfo", "r", encoding="utf-8") as meminfo:
+            for line in meminfo:
+                key, value = line.split(":", 1)
+                values[key] = int(value.strip().split()[0])
+        total = values.get("MemTotal", 0)
+        available = values.get("MemAvailable", 0)
+        if total:
+            return f"{((total - available) / total) * 100:.1f}%"
+    except Exception:
+        pass
+    return "N/A"
 
 
 def _bot_stats_footer(speed: float = 0.0, upload: bool = False) -> str:
@@ -45,36 +68,58 @@ def _bot_stats_footer(speed: float = 0.0, upload: bool = False) -> str:
     dl = 0 if upload else speed
     ul = speed if upload else 0
     return (
-        "◈ Bot Stats\n"
-        f"├─ CPU: {cpu:.1f}% | Free: {_compact_bytes(usage.free)} [{free_pct:.1f}%]\n"
-        f"├─ RAM: N/A | UPTIME: {uptime}\n"
-        f"└─ DL: {_compact_bytes(dl, '/s')} | UL: {_compact_bytes(ul, '/s')}"
+        "▣ **Bot Stats**\n"
+        f"├**CPU:** {cpu:.1f}% | **F:** {_compact_bytes(usage.free, compact=True)} [{free_pct:.1f}%]\n"
+        f"├**RAM:** {_ram_percent()} | **UPTIME:** {uptime}\n"
+        f"└ **DL:** {_compact_bytes(dl, '/s', compact=True)} | **UL:** {_compact_bytes(ul, '/s', compact=True)}"
     )
 
 
 def render_transfer_progress(
     name: str, current: int, total: int, status: str, start: float, engine: str = "Pyrogram",
-    mode: str = "#Leech", user: str = "Unknown", user_id: int | str = "N/A",
+    mode: str = "#Leech | #Tg", user: str = "Unknown", user_id: int | str = "N/A",
     cancel_token: str = "cancelsfw_xxxxx", index: int | None = None, upload: bool = False,
+    include_footer: bool = True,
 ) -> str:
     now = time.time()
     elapsed = max(now - start, 0.001)
     percentage = (current * 100 / total) if total else 0
     speed = current / elapsed
     eta = TimeFormatter(int(((total - current) / speed) * 1000)) if speed and total and current < total else "0s"
-    title = f"{index}\n " if index is not None else ""
-    title += f"*{name}*"
+    title = f"{index}. " if index is not None else ""
+    block = (
+        f"*{title}{name}*\n"
+        f"│ [{_progress_bar(percentage)}] {percentage:.2f}%\n"
+        f"├**Processed:** {_compact_bytes(current)} of {_compact_bytes(total)}\n"
+        f"├**Status:** {status} | ETA: {eta}\n"
+        f"├**Speed:** {_compact_bytes(speed, '/s')} | Elapsed: {TimeFormatter(int(elapsed * 1000))}\n"
+        f"├**Engine:** {engine}\n"
+        f"├**Mode:** {mode}\n"
+        f"├**User:** {user} | ID: {user_id}\n"
+        f"└ /{cancel_token}"
+    )
+    if include_footer:
+        block += f"\n\n{_bot_stats_footer(speed, upload=upload)}"
+    return block
+
+
+def render_completed_status(
+    name: str, size: int, start: float, mode: str = "#Leech | #Tg", total_files: int = 1,
+    by: str = "@Rashimika_madanna777", sent_to_pm: bool = True,
+) -> str:
+    elapsed = TimeFormatter(int((time.time() - start) * 1000))
+    destination = "Bot PM (Private)" if sent_to_pm else "target chat"
     return (
-        f"{title}\n"
-        f"   [{_progress_bar(percentage)}] {percentage:.2f}%\n"
-        f"├─ Processed: {_compact_bytes(current)} of {_compact_bytes(total)}\n"
-        f"├─ Status: {status} | ETA: {eta}\n"
-        f"├─ Speed: {_compact_bytes(speed, '/s')} | Elapsed: {TimeFormatter(int(elapsed * 1000))}\n"
-        f"├─ Engine: {engine}\n"
-        f"├─ Mode: {mode}\n"
-        f"├─ User: {user} | ID: {user_id}\n"
-        f"└─ /{cancel_token}\n\n"
-        f"{_bot_stats_footer(speed, upload=upload)}"
+        f"*{name}*\n"
+        "│\n"
+        f"├**Size:** {_compact_bytes(size, compact=True)}\n"
+        f"├**Elapsed:** {elapsed}\n"
+        f"├**Mode:** {mode}\n"
+        f"├**Total Files:** {total_files}\n"
+        f"└**By:** {by}\n\n"
+        "➲ *File(s) have been Sent. Access via Links...*\n"
+        f"➲ *File(s) have been Sent to {destination}*\n"
+        f"1. {name}"
     )
 
 async def progress_for_pyrogram(
@@ -118,7 +163,7 @@ async def progress_for_pyrogram(
         user_id = getattr(message, "progress_user_id", Config.ADMIN[0] if Config.ADMIN else "N/A")
         tmp = render_transfer_progress(
             media_name, current, total, "Upload" if upload else "Download", start,
-            engine="Pyrogram", mode="#Leech | #Telegram", user=user, user_id=user_id,
+            engine="Pyrogram", mode="#Leech | #Tg", user=user, user_id=user_id,
             cancel_token=f"cancelsfw_{msg_id}", upload=upload,
         )
 
@@ -187,7 +232,7 @@ def TimeFormatter(ms: int) -> str:
     if ms and not parts:  # Only show ms if no larger units
         parts.append(f"{ms}ms")
     
-    return ", ".join(parts) if parts else "0s"
+    return "".join(parts) if parts else "0s"
 
 
 async def download_thumbnail(image_url, save_path):

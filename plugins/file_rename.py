@@ -7,7 +7,7 @@ from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.errors import MessageNotModified, PeerIdInvalid, FloodWait
 
-from helper.utils import progress_for_pyrogram, download_thumbnail
+from helper.utils import progress_for_pyrogram, download_thumbnail, render_completed_status
 from helper.media_tools import add_video_branding, is_video_file, make_cover_image
 from helper.database import mnbots
 from helper.telegram_fetch import fetch_via_link
@@ -238,6 +238,10 @@ async def process_file(client: Client, message: Message):
         f"🆔 Message ID: `{message.id}`\n"
         f"⚡ Active Downloads: {current_active}/{MAX_CONCURRENT_DOWNLOADS}"
     )
+    if status_msg:
+        status_msg.progress_name = new_name
+        status_msg.progress_user = "MN  -  TG"
+        status_msg.progress_user_id = ADMIN_ID
     
     try:
         # Download the file
@@ -302,15 +306,18 @@ async def process_file(client: Client, message: Message):
         
         print(f"[SUCCESS] File uploaded successfully: {new_name}")
         
-        # Update admin - Success
+        # Update admin - Success with the compact leech-style completion card
         await edit_admin_message(
             status_msg,
-            f"✅ **Upload Complete**\n\n"
-            f"📺 Source: `{source_channel}`\n"
-            f"📄 File: `{new_name}`\n"
-            f"📦 Size: {filesize}\n"
-            f"🆔 Message ID: `{message.id}`\n"
-            f"✨ Status: Successfully uploaded!"
+            render_completed_status(
+                new_name,
+                os.path.getsize(upload_path) if os.path.exists(upload_path) else file_size,
+                dl_start,
+                mode="#Leech | #Tg",
+                total_files=1,
+                by="@Rashimika_madanna777",
+                sent_to_pm=True,
+            ),
         )
         
     except Exception as e:
