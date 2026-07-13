@@ -172,21 +172,13 @@ async def upload_leech_file(client: Client, message: Message, file_path: Path, s
         for chat_id in target_chats:
             if Config.SEND_COVER_BEFORE_UPLOAD and cover:
                 await client.send_photo(chat_id, cover, caption="🖼️ Cover preview")
-            if is_video_file(str(upload_path)):
-                await run_with_floodwait_retry(lambda chat_id=chat_id: client.send_video(
-                    chat_id, str(upload_path), caption=caption,
-                    thumb=thumb if thumb and os.path.exists(thumb) else None,
-                    supports_streaming=True,
-                    progress=progress_for_pyrogram,
-                    progress_args=("📤 Uploading leech...", status, time.time(), 0, 20),
-                ), "leech video upload")
-            else:
-                await run_with_floodwait_retry(lambda chat_id=chat_id: client.send_document(
-                    chat_id, str(upload_path), caption=caption,
-                    thumb=thumb if thumb and os.path.exists(thumb) else None,
-                    progress=progress_for_pyrogram,
-                    progress_args=("📤 Uploading leech...", status, time.time(), 0, 20),
-                ), "leech document upload")
+            await run_with_floodwait_retry(lambda chat_id=chat_id: client.send_document(
+                chat_id, str(upload_path), caption=caption,
+                file_name=upload_path.name,
+                thumb=thumb if thumb and os.path.exists(thumb) else None,
+                progress=progress_for_pyrogram,
+                progress_args=("📤 Uploading file...", status, time.time(), 0, 20),
+            ), "leech document upload")
 
 
 async def run_leech_job(client: Client, message: Message, source: str, target_chats: list[int | str] | None = None):

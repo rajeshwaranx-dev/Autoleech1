@@ -277,48 +277,24 @@ async def process_file(client: Client, message: Message):
                         lambda chat_id=target_chat: client.send_photo(chat_id=chat_id, photo=cover, caption="🖼️ **Cover Preview**\n" + caption),
                         task_name=f"Upload cover {message.id} -> {target_chat}",
                     )
-                if message.video:
-                    await run_with_floodwait_retry(
-                        lambda chat_id=target_chat: client.send_video(
-                            chat_id=chat_id,
-                            video=upload_path,
-                            caption=caption,
-                            file_name=new_name,
-                            thumb=thumb if thumb and os.path.exists(thumb_file) else None,
-                            duration=message.video.duration,
-                            width=message.video.width,
-                            height=message.video.height,
-                            supports_streaming=True,
-                            progress=progress_for_pyrogram,
-                            progress_args=(
-                                "📤 Uploading video...",
-                                status_msg,
-                                time.time(),
-                                MIN_TRANSFER_SPEED_BPS,
-                                SPEED_CHECK_GRACE_SECONDS,
-                            ),
+                await run_with_floodwait_retry(
+                    lambda chat_id=target_chat: client.send_document(
+                        chat_id=chat_id,
+                        document=upload_path,
+                        caption=caption,
+                        file_name=new_name,
+                        thumb=thumb if thumb and os.path.exists(thumb_file) else None,
+                        progress=progress_for_pyrogram,
+                        progress_args=(
+                            "📤 Uploading file...",
+                            status_msg,
+                            time.time(),
+                            MIN_TRANSFER_SPEED_BPS,
+                            SPEED_CHECK_GRACE_SECONDS,
                         ),
-                        task_name=f"Upload video {message.id} -> {target_chat}",
-                    )
-                else:
-                    await run_with_floodwait_retry(
-                        lambda chat_id=target_chat: client.send_document(
-                            chat_id=chat_id,
-                            document=upload_path,
-                            caption=caption,
-                            file_name=new_name,
-                            thumb=thumb if thumb and os.path.exists(thumb_file) else None,
-                            progress=progress_for_pyrogram,
-                            progress_args=(
-                                "📤 Uploading...",
-                                status_msg,
-                                time.time(),
-                                MIN_TRANSFER_SPEED_BPS,
-                                SPEED_CHECK_GRACE_SECONDS,
-                            ),
-                        ),
-                        task_name=f"Upload document {message.id} -> {target_chat}",
-                    )
+                    ),
+                    task_name=f"Upload document {message.id} -> {target_chat}",
+                )
         transfer_stats["upload_bytes"] += file_size
         transfer_stats["upload_files"] += 1
         transfer_stats["upload_time"] += max(time.time() - ul_start, 0.001)
@@ -566,6 +542,70 @@ async def mntgx_help(client: Client, message: Message):
         "• `/ping` - quick bot health check\n"
     )
     await message.reply_text(text)
+
+
+@Client.on_message(filters.private & filters.command(["admin", "panel"]))
+async def admin_panel(client: Client, message: Message):
+    if not is_admin_user(message):
+        return await message.reply_text("Only admins can use this command.")
+    await message.reply_text(
+        "🛠️ **Admin Panel**\n\n"
+        "• `/stats` - queue, speed and ETA\n"
+        "• `/broadcast <text>` - send a text broadcast to all target chats\n"
+        "• `/setfsub <chat_id|off>` - set or disable force-sub channel for runtime\n"
+        "• `/settings` - show current bot settings\n"
+        "• `/addsource` `/removesource` `/listsources` - source channel control\n"
+        "• `/addtarget` `/removetarget` `/listtargets` - destination control\n"
+        "• `/cleanque confirm` - clear queued jobs\n"
+        "• `/requeue` - load persisted queue jobs"
+    )
+
+@Client.on_message(filters.private & filters.command("settings"))
+async def user_settings_panel(client: Client, message: Message):
+    if not is_admin_user(message):
+        return await message.reply_text("Only admins can use this command.")
+    await message.reply_text(
+        "⚙️ **Bot Settings**\n\n"
+        f"• Upload mode: `Document/File`\n"
+        f"• Media branding: `{Config.ENABLE_MEDIA_BRANDING}`\n"
+        f"• Watermark text: `{Config.WATERMARK_TEXT}`\n"
+        f"• Watermark duration: `full video if <=5 min, otherwise first 5%`\n"
+        f"• Force sub: `{Config.FORCE_SUB or 'off'}`\n"
+        f"• Max downloads: `{MAX_CONCURRENT_DOWNLOADS}`\n"
+        f"• Max uploads: `{MAX_CONCURRENT_UPLOADS}`\n"
+        f"• Targets: `{', '.join(DESTINATION_CHANNELS)}`\n"
+        f"• Sources: `{len(SOURCE_CHANNELS)}`"
+    )
+
+@Client.on_message(filters.private & filters.command("setfsub"))
+async def set_force_sub(client: Client, message: Message):
+    if not is_admin_user(message):
+        return await message.reply_text("Only admins can use this command.")
+    if len(message.command) < 2:
+        return await message.reply_text("Usage: `/setfsub <chat_id|off>`")
+    value = message.command[1].strip()
+    Config.FORCE_SUB = "" if value.lower() in {"off", "none", "0"} else value
+    await message.reply_text(f"✅ Force-sub updated for this runtime: `{Config.FORCE_SUB or 'off'}`")
+
+@Client.on_message(filters.private & filters.command("broadcast"))
+async def broadcast_cmd(client: Client, message: Message):
+    if not is_admin_user(message):
+        return await message.reply_text("Only admins can use this command.")
+    text = message.text.split(maxsplit=1)[1].strip() if message.text and len(message.text.split(maxsplit=1)) > 1 else ""
+    if not text and message.reply_to_message:
+        text = message.reply_to_message.text or message.reply_to_message.caption or ""
+    if not text:
+        return await message.reply_text("Usage: `/broadcast <message>` or reply to a text message with `/broadcast`.")
+    sent = 0
+    failed = 0
+    for chat_id in DESTINATION_CHANNELS:
+        try:
+            await client.send_message(chat_id, text, disable_web_page_preview=True)
+            sent += 1
+        except Exception as e:
+            failed += 1
+            print(f"[WARN] Broadcast failed for {chat_id}: {e}")
+    await message.reply_text(f"📣 Broadcast complete. Sent: `{sent}` | Failed: `{failed}`")
 
 @Client.on_message(filters.private & filters.command(["cleanque", "clearque"]))
 async def clear_queue(client: Client, message: Message):

@@ -1,9 +1,11 @@
 # helper/utils.py
 
 import math
+import os
+import shutil
 import time
 import aiohttp
-from config import Txt
+from config import Config, Txt
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 # throttle threshold: 100 MiB
@@ -12,6 +14,68 @@ _THROTTLE_SECONDS = 2
 _last_update: dict[int, int] = {}
 _last_update_time: dict[int, float] = {}
 _low_speed_hits: dict[int, int] = {}
+
+
+def _progress_bar(percentage: float, width: int = 18) -> str:
+    filled = max(0, min(width, math.floor((percentage / 100) * width)))
+    return "█" * filled + "░" * (width - filled)
+
+
+def _compact_bytes(size: float, suffix: str = "B") -> str:
+    if not size:
+        return "0B" if suffix == "B" else "0B/s"
+    units = ["", "Ki", "Mi", "Gi", "Ti"] if suffix == "B" else ["", "Ki", "Mi", "Gi", "Ti"]
+    value = float(size)
+    idx = 0
+    while value >= 1024 and idx < len(units) - 1:
+        value /= 1024
+        idx += 1
+    return f"{value:.2f} {units[idx]}{suffix}" if idx else f"{value:.0f}{suffix}"
+
+
+def _bot_stats_footer(speed: float = 0.0, upload: bool = False) -> str:
+    uptime = TimeFormatter(int((time.time() - Config.BOT_UPTIME) * 1000))
+    try:
+        load = os.getloadavg()[0]
+        cpu = min(100.0, (load / max(os.cpu_count() or 1, 1)) * 100)
+    except Exception:
+        cpu = 0.0
+    usage = shutil.disk_usage(".")
+    free_pct = (usage.free / usage.total * 100) if usage.total else 0
+    dl = 0 if upload else speed
+    ul = speed if upload else 0
+    return (
+        "◈ Bot Stats\n"
+        f"├─ CPU: {cpu:.1f}% | Free: {_compact_bytes(usage.free)} [{free_pct:.1f}%]\n"
+        f"├─ RAM: N/A | UPTIME: {uptime}\n"
+        f"└─ DL: {_compact_bytes(dl, '/s')} | UL: {_compact_bytes(ul, '/s')}"
+    )
+
+
+def render_transfer_progress(
+    name: str, current: int, total: int, status: str, start: float, engine: str = "Pyrogram",
+    mode: str = "#Leech", user: str = "Unknown", user_id: int | str = "N/A",
+    cancel_token: str = "cancelsfw_xxxxx", index: int | None = None, upload: bool = False,
+) -> str:
+    now = time.time()
+    elapsed = max(now - start, 0.001)
+    percentage = (current * 100 / total) if total else 0
+    speed = current / elapsed
+    eta = TimeFormatter(int(((total - current) / speed) * 1000)) if speed and total and current < total else "0s"
+    title = f"{index}\n " if index is not None else ""
+    title += f"*{name}*"
+    return (
+        f"{title}\n"
+        f"   [{_progress_bar(percentage)}] {percentage:.2f}%\n"
+        f"├─ Processed: {_compact_bytes(current)} of {_compact_bytes(total)}\n"
+        f"├─ Status: {status} | ETA: {eta}\n"
+        f"├─ Speed: {_compact_bytes(speed, '/s')} | Elapsed: {TimeFormatter(int(elapsed * 1000))}\n"
+        f"├─ Engine: {engine}\n"
+        f"├─ Mode: {mode}\n"
+        f"├─ User: {user} | ID: {user_id}\n"
+        f"└─ /{cancel_token}\n\n"
+        f"{_bot_stats_footer(speed, upload=upload)}"
+    )
 
 async def progress_for_pyrogram(
     current,
@@ -47,30 +111,20 @@ async def progress_for_pyrogram(
         _last_update[msg_id] = current
         _last_update_time[msg_id] = now
 
-        percentage = current * 100 / total if total else 0
         speed = current / diff if diff > 0 else 0
-        elapsed_ms = round(diff) * 1000
-        eta_ms = (round((total - current) / speed) * 1000) if speed > 0 else 0
-        total_eta_ms = elapsed_ms + eta_ms
-
-        elapsed_str = TimeFormatter(elapsed_ms)
-        eta_str = TimeFormatter(total_eta_ms)
-
-        # Build progress bar
-        filled = math.floor(percentage / 5)
-        bar = "▣" * filled + "▢" * (20 - filled)
-
-        tmp = bar + Txt.PROGRESS_BAR.format(
-            round(percentage, 2),
-            humanbytes(current),
-            humanbytes(total),
-            humanbytes(speed),
-            eta_str or "0 s"
+        upload = "upload" in str(ud_type).lower()
+        media_name = getattr(message, "progress_name", None) or str(ud_type).replace("📤", "").replace("📥", "").strip() or "File"
+        user = getattr(message, "progress_user", "MN - TG")
+        user_id = getattr(message, "progress_user_id", Config.ADMIN[0] if Config.ADMIN else "N/A")
+        tmp = render_transfer_progress(
+            media_name, current, total, "Upload" if upload else "Download", start,
+            engine="Pyrogram", mode="#Leech | #Telegram", user=user, user_id=user_id,
+            cancel_token=f"cancelsfw_{msg_id}", upload=upload,
         )
 
         try:
             await message.edit(
-                text=f"{ud_type}\n\n{tmp}",
+                text=tmp,
                 reply_markup=InlineKeyboardMarkup(
                     [[InlineKeyboardButton("✖️ 𝖢𝖺𝗇𝖼𝖾𝗅 ✖️", callback_data="close")]]
                 )
