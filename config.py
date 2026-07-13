@@ -42,7 +42,7 @@ class Config(object):
     METADATA_TEXT = os.environ.get("METADATA_TEXT", "Join @MNTGX in Telegram")
     SEND_COVER_BEFORE_UPLOAD = bool(int(os.environ.get("SEND_COVER_BEFORE_UPLOAD", "1")))
     CLEAN_DOWNLOADS = bool(int(os.environ.get("CLEAN_DOWNLOADS", "1")))
-    ARIA2_SPLIT = min(8, max(1, int(os.environ.get("ARIA2_SPLIT", "4"))))
+    ARIA2_SPLIT = min(16, max(1, int(os.environ.get("ARIA2_SPLIT", "6"))))
     FFMPEG_THREADS = min(2, max(1, int(os.environ.get("FFMPEG_THREADS", "1"))))
 class Txt(object):
     PROGRESS_BAR = """
@@ -67,7 +67,7 @@ Use the buttons below or /help to explore commands.
 /help - Command list
 /mntgx - Admin feature panel
 /stats - Queue, speed and ETA
-/leech <url|magnet> - Download and upload direct/torrent/magnet links
+/leech <url|magnet> - Download and upload direct links, torrents, magnets, or YouTube/Twitter(X)/Instagram/TikTok/Reddit/Facebook/SoundCloud and 100s of other sites via yt-dlp
 /link - Reply to Telegram media to create a temporary browser download link
 /torrent - Alias for /leech
 /magnet - Alias for /leech
