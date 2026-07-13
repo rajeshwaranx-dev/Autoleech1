@@ -10,6 +10,7 @@ from pyrogram.errors import MessageNotModified, PeerIdInvalid, FloodWait
 from helper.utils import progress_for_pyrogram, download_thumbnail
 from helper.media_tools import add_video_branding, is_video_file, make_cover_image
 from helper.database import mnbots
+from helper.telegram_fetch import fetch_via_link
 from config import Config
 
 BOT_ID = None
@@ -129,21 +130,17 @@ async def run_with_floodwait_retry(coro_factory, task_name: str, retries: int = 
     raise RuntimeError(f"{task_name} failed after {retries} retries")
 
 async def ensure_non_zero_download(client: Client, message: Message, download_path: str, status_msg: Message):
-    """Download with retries and validate on-disk size to prevent 0B uploads."""
+    """Download with retries and validate on-disk size to prevent 0B uploads.
+
+    Fetches via a temporary stream link (the same mechanism as /link) rather than
+    pulling the file straight through MTProto, so channel-queue downloads get the
+    same parallel range-request speedup as direct-link leeching. fetch_via_link
+    reports its own progress onto status_msg and falls back to a direct Pyrogram
+    download automatically if the self-serve HTTP path is unavailable.
+    """
     for attempt in range(1, 4):
         await run_with_floodwait_retry(
-            lambda: client.download_media(
-                message=message,
-                file_name=download_path,
-                progress=progress_for_pyrogram,
-                progress_args=(
-                    "📥 Downloading...",
-                    status_msg,
-                    time.time(),
-                    MIN_TRANSFER_SPEED_BPS,
-                    SPEED_CHECK_GRACE_SECONDS,
-                ),
-            ),
+            lambda: fetch_via_link(client, message, download_path, status=status_msg, label="📥 Downloading..."),
             task_name=f"Download {message.id}",
         )
         local_size = os.path.getsize(download_path) if os.path.exists(download_path) else 0
@@ -550,11 +547,15 @@ async def mntgx_help(client: Client, message: Message):
         "• Auto queue from source channels\n"
         "• Rename cleanup tokens\n"
         "• Document + Video forwarding\n"
+        "• Telegram files fetched via temporary link (parallel range requests), not direct MTProto pull\n"
+        "• Leech: aria2 torrents/magnets, yt-dlp (100s of sites), parallel-range direct HTTP\n"
         "• FloodWait-safe retries\n"
         "• Resume queued jobs after restart\n"
         "• Queue/speed stats with ETA\n\n"
         "**Admin Commands**\n"
         "• `/stats` - queue + speed + ETA stats\n"
+        "• `/leech <url|magnet>` - torrent, magnet, direct link, or YouTube/Twitter(X)/Instagram/TikTok/... \n"
+        "• `/link` - reply to Telegram media for a temporary browser download link\n"
         "• `/addque <first_msg_url> <last_msg_url>` - bulk queue import\n"
         "• `/addremname token1,token2` - add rename cleanup tokens\n"
         "• `/listremname` - list cleanup tokens\n"
