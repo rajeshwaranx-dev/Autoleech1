@@ -38,11 +38,15 @@ async def callback_handler(client, query: CallbackQuery):
         await query.message.edit_text(Txt.ABOUT_TEXT + "\n• **Power:** Torrent, magnet, metadata, cover and queue automation", reply_markup=home_keyboard())
     elif data == "leech_help":
         await query.message.edit_text(
-            "🧲 **Torrent/Magnet Leech**\n\n"
+            "🧲 **Leech: Torrent / Magnet / Direct / 100s of Sites**\n\n"
             "• `/leech <direct-url>`\n"
             "• `/leech <magnet-link>`\n"
+            "• `/leech <youtube/twitter/instagram/tiktok/reddit/... link>`\n"
             "• Reply to a `.torrent` file with `/leech`\n\n"
-            "The bot downloads with aria2c, adds cover/thumbnail branding, then uploads with progress callbacks.",
+            "Torrents/magnets use aria2c. Social/media links use yt-dlp. Plain file links use a "
+            "parallel-range HTTP downloader for speed. Telegram-origin files are fetched through a "
+            "temporary link (like `/link`) instead of a direct download. The bot then adds cover/"
+            "thumbnail branding and uploads with progress callbacks.",
             reply_markup=home_keyboard(),
         )
     elif data == "stats":
