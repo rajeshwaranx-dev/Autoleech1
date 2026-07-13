@@ -21,10 +21,11 @@ class Bot(Client):
             bot_token=Config.BOT_TOKEN,
             workers=Config.PYROGRAM_WORKERS,
             plugins={"root": "plugins"},
-            sleep_threshold=15,
+            sleep_threshold=60,
         )
         self.site = None
         self.keep_alive_task = None
+        self.upload_client = self
 
     async def health_check(self, request):
         """Simple health check endpoint"""
@@ -74,6 +75,21 @@ class Bot(Client):
         ])
         print(f"{me.first_name} is running...✨️")
 
+        if Config.PREMIUM_SESSION_STRING:
+            self.upload_client = Client(
+                name="premium_uploader",
+                api_id=Config.API_ID,
+                api_hash=Config.API_HASH,
+                session_string=Config.PREMIUM_SESSION_STRING,
+                workers=max(4, min(16, Config.PYROGRAM_WORKERS // 2)),
+                sleep_threshold=60,
+            )
+            await self.upload_client.start()
+            upload_me = await self.upload_client.get_me()
+            print(f"[UPLOAD] Premium/user upload client started as {upload_me.first_name} ({upload_me.id})")
+        else:
+            print("[UPLOAD] PREMIUM_SESSION_STRING not set; using bot upload client with Telegram bot upload limits.")
+
         # Setup web server for health checks
         app = web.Application()
         app.add_routes([
@@ -115,6 +131,8 @@ class Bot(Client):
                 pass
         if self.site:
             await self.site.stop()
+        if self.upload_client is not self:
+            await self.upload_client.stop()
         await super().stop()
 
 bot = Bot()

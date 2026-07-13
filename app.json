@@ -87,6 +87,16 @@
             "description": "Seconds between keep-alive pings. Default 600 (10 minutes).",
             "value": "600",
             "required": false
+        },
+        "MAX_UPLOAD_SIZE_GB": {
+            "description": "Maximum upload size in GB. Use 4 only with a Premium user session string.",
+            "value": "2",
+            "required": false
+        },
+        "PREMIUM_SESSION_STRING": {
+            "description": "Pyrogram user session string for 2GB+ document uploads. User must be allowed to post in target channels.",
+            "value": "",
+            "required": false
         }
     },
     "buildpacks": [

@@ -171,11 +171,12 @@ async def upload_leech_file(client: Client, message: Message, file_path: Path, s
     status.progress_name = upload_path.name
     status.progress_user = "MN  -  TG"
     status.progress_user_id = message.from_user.id if message.from_user else (Config.ADMIN[0] if Config.ADMIN else "N/A")
+    uploader = getattr(client, "upload_client", client)
     async with upload_semaphore:
         for chat_id in target_chats:
             if Config.SEND_COVER_BEFORE_UPLOAD and cover:
                 await client.send_photo(chat_id, cover, caption="🖼️ Cover preview")
-            await run_with_floodwait_retry(lambda chat_id=chat_id: client.send_document(
+            await run_with_floodwait_retry(lambda chat_id=chat_id: uploader.send_document(
                 chat_id, str(upload_path), caption=caption,
                 file_name=upload_path.name,
                 thumb=thumb if thumb and os.path.exists(thumb) else None,

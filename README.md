@@ -56,8 +56,8 @@ A Pyrogram-based Telegram downloader/leech bot optimized for Heroku/Docker. It m
 | `MAX_CONCURRENT_DOWNLOADS` | No | `2` | Hard-capped at 5 workers; keep low on Heroku eco/basic dynos. |
 | `MAX_CONCURRENT_UPLOADS` | No | `2` | Hard-capped at 5 uploads; keep low on Heroku eco/basic dynos. |
 | `MIN_TRANSFER_SPEED_MBPS` | No | `4` | Progress warning threshold. |
-| `MAX_UPLOAD_SIZE_GB` | No | `2` | Telegram bot uploads are normally limited to 2GB. |
-| `PREMIUM_SESSION_STRING` | No | empty | Reserved for user-session/premium deployments that can support larger uploads. |
+| `MAX_UPLOAD_SIZE_GB` | No | `2` | Maximum file size accepted by the bot. Set `4` only when `PREMIUM_SESSION_STRING` is a Telegram Premium user session and that user is admin/member in target channels. |
+| `PREMIUM_SESSION_STRING` | No | empty | Pyrogram user session string used as a separate uploader for 2GB+ documents. Without it, uploads use the bot client and Telegram bot limits still apply. |
 | `ENABLE_MEDIA_BRANDING` | No | `0` | Enable ffmpeg watermark/metadata. Disabled by default to avoid Heroku memory kills; turn on for bigger dynos. |
 | `WATERMARK_TEXT` | No | `@MNTGX` | Center watermark text. |
 | `METADATA_TEXT` | No | `Join @MNTGX in Telegram` | Metadata and cover brand text. |
@@ -86,7 +86,7 @@ Plain direct-file URLs (and the internal Telegram-file-via-link fetch used by qu
 
 ## 2GB+ Uploads
 
-Telegram Bot API uploads are usually limited to 2GB. This repo exposes `MAX_UPLOAD_SIZE_GB` and `PREMIUM_SESSION_STRING` configuration for premium/user-session deployments, but you must run a user-capable Pyrogram client/session in an environment that permits larger uploads. Without that, keep `MAX_UPLOAD_SIZE_GB=2`.
+Telegram Bot API uploads are usually limited to 2GB. When `PREMIUM_SESSION_STRING` is set, the bot starts a separate Pyrogram user uploader and uses it for `send_document`, allowing 2GB+ documents when the session belongs to an account that can upload that size (Telegram Premium for up to 4GB) and that account has permission to post in the destination chat/channel. Set `MAX_UPLOAD_SIZE_GB=4` only with that Premium/user uploader; without it, keep `MAX_UPLOAD_SIZE_GB=2`.
 
 ## Deploy
 

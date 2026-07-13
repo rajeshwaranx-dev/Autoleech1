@@ -160,6 +160,9 @@ async def edit_admin_message(message: Message, text: str):
         await message.edit(text)
     except MessageNotModified:
         pass
+    except FloodWait as e:
+        wait_for = int(getattr(e, "value", 0) or getattr(e, "x", 0) or 30) + 2
+        print(f"[WARN] Admin edit FloodWait; skipping edits for {wait_for}s")
     except Exception as e:
         print(f"[ERROR] Failed to edit admin message: {e}")
 
@@ -272,8 +275,10 @@ async def process_file(client: Client, message: Message):
         cover_file = os.path.join(download_path_base, f"cover_{message.id}.jpg")
         cover = make_cover_image(cover_file, new_name, thumb if thumb and os.path.exists(thumb_file) else None, Config.METADATA_TEXT)
 
-        # Upload to destination channel(s)
+        # Upload to destination channel(s). Use premium/user session when configured so 2GB+
+        # documents can be uploaded via MTProto instead of the bot upload client limit.
         ul_start = time.time()
+        uploader = getattr(client, "upload_client", client)
         async with upload_semaphore:
             for target_chat in DESTINATION_CHANNELS:
                 if Config.SEND_COVER_BEFORE_UPLOAD and cover:
@@ -282,7 +287,7 @@ async def process_file(client: Client, message: Message):
                         task_name=f"Upload cover {message.id} -> {target_chat}",
                     )
                 await run_with_floodwait_retry(
-                    lambda chat_id=target_chat: client.send_document(
+                    lambda chat_id=target_chat: uploader.send_document(
                         chat_id=chat_id,
                         document=upload_path,
                         caption=caption,

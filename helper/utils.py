@@ -6,14 +6,16 @@ import shutil
 import time
 import aiohttp
 from config import Config
+from pyrogram.errors import FloodWait
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 # throttle threshold: 100 MiB
-_THROTTLE_BYTES = 100 * 1024 * 1024
-_THROTTLE_SECONDS = 2
+_THROTTLE_BYTES = 256 * 1024 * 1024
+_THROTTLE_SECONDS = 10
 _last_update: dict[int, int] = {}
 _last_update_time: dict[int, float] = {}
 _low_speed_hits: dict[int, int] = {}
+_edit_blocked_until: dict[int, float] = {}
 
 
 def _progress_bar(percentage: float, width: int = 15) -> str:
@@ -148,6 +150,9 @@ async def progress_for_pyrogram(
         # If message doesn't have id, skip progress update
         return
     
+    if now < _edit_blocked_until.get(msg_id, 0):
+        return
+
     last = _last_update.get(msg_id, 0)
     
     # Only update if enough data/time passed or if transfer is complete
@@ -174,6 +179,10 @@ async def progress_for_pyrogram(
                     [[InlineKeyboardButton("✖️ 𝖢𝖺𝗇𝖼𝖾𝗅 ✖️", callback_data="close")]]
                 )
             )
+        except FloodWait as e:
+            wait_for = int(getattr(e, "value", 0) or getattr(e, "x", 0) or 30) + 3
+            _edit_blocked_until[msg_id] = time.time() + wait_for
+            print(f"[WARN] Progress edit FloodWait: pausing edits for {wait_for}s")
         except Exception as e:
             # Silently ignore edit errors (message might be deleted, etc.)
             print(f"[DEBUG] Progress update failed: {e}")
@@ -198,6 +207,7 @@ async def progress_for_pyrogram(
             _last_update.pop(msg_id, None)
             _last_update_time.pop(msg_id, None)
             _low_speed_hits.pop(msg_id, None)
+            _edit_blocked_until.pop(msg_id, None)
 
 
 def humanbytes(size):
