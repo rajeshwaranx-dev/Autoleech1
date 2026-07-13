@@ -4,15 +4,20 @@ import re
 import shutil
 import time
 from pathlib import Path
-from urllib.parse import urlparse
 
-import aiohttp
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from config import Config
 from helper.media_tools import add_video_branding, is_video_file, make_cover_image
+from helper.multi_downloader import (
+    download_direct_http_fast,
+    download_with_ytdlp,
+    is_ytdlp_available,
+    looks_like_ytdlp_source,
+)
 from helper.stream_links import build_stream_url, register_stream
+from helper.telegram_fetch import fetch_via_link
 from helper.utils import download_thumbnail, humanbytes, progress_for_pyrogram
 from plugins.file_rename import (
     DESTINATION_CHANNELS,
@@ -61,44 +66,33 @@ def find_largest_file(folder: Path) -> Path | None:
     return max(files, key=lambda p: p.stat().st_size, default=None)
 
 
-async def download_direct_http(source: str, out_dir: Path, status: Message) -> Path:
-    parsed = urlparse(source)
-    filename = Path(parsed.path).name or "download.bin"
-    target = out_dir / filename
-    last_edit = 0.0
-    downloaded = 0
-    async with aiohttp.ClientSession() as session:
-        async with session.get(source, timeout=aiohttp.ClientTimeout(total=None)) as resp:
-            resp.raise_for_status()
-            total = int(resp.headers.get("Content-Length", "0") or 0)
-            with open(target, "wb") as f:
-                async for chunk in resp.content.iter_chunked(1024 * 1024):
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    if time.time() - last_edit > 5:
-                        last_edit = time.time()
-                        total_text = humanbytes(total) if total else "unknown"
-                        await status.edit(f"🌐 **HTTP downloading...**\n{humanbytes(downloaded)} / {total_text}", reply_markup=leech_keyboard())
-    if target.exists() and target.stat().st_size > 0:
-        return target
-    raise RuntimeError("HTTP download finished but no file was saved.")
+def _is_torrentish(source: str) -> bool:
+    return source.lower().startswith("magnet:?") or source.lower().endswith(".torrent") or "torrent" in source.lower()
 
 
 async def download_with_aria2(source: str, out_dir: Path, status: Message) -> Path:
+    """Torrent/magnet leeching via aria2c. This is the only backend that can
+    handle magnets and .torrent files — there is no HTTP-only substitute for
+    BitTorrent, so a clear, actionable error is critical when aria2c is missing."""
     aria2 = shutil.which("aria2c")
-    is_torrentish = source.lower().startswith("magnet:?") or source.lower().endswith(".torrent") or "torrent" in source.lower()
     if not aria2:
-        if source.startswith(("http://", "https://")) and not is_torrentish:
-            return await download_direct_http(source, out_dir, status)
         raise RuntimeError(
-            "aria2c is not installed on this dyno, so torrent/magnet leeching cannot start. "
-            "For Heroku, add the apt buildpack and keep Aptfile (`aria2`, `ffmpeg`, `fonts-dejavu-core`) before redeploying. "
-            "Direct HTTP links still work through the built-in fallback downloader."
+            "aria2c is not installed on this dyno, so torrent/magnet leeching cannot start.\n\n"
+            "**Heroku fix:** open your app's Settings → Buildpacks and add, in this exact order:\n"
+            "1. `https://github.com/heroku/heroku-buildpack-apt` (reads `Aptfile`)\n"
+            "2. `heroku/python`\n"
+            "The apt buildpack must come *before* the Python buildpack, or the Aptfile is skipped. "
+            "The included `app.json` now declares this automatically for one-click deploys — if you "
+            "deployed before this update, add the buildpack manually and redeploy once.\n\n"
+            "**Docker:** already installs `aria2` in the Dockerfile; rebuild the image if it's missing.\n\n"
+            "Direct links and yt-dlp-supported sites (YouTube, Twitter/X, Instagram, TikTok, etc.) "
+            "still work without aria2c."
         )
     cmd = [
         aria2, "--seed-time=0", "--summary-interval=5", "--console-log-level=warn",
         f"--max-connection-per-server={Config.ARIA2_SPLIT}", f"--split={Config.ARIA2_SPLIT}", "--min-split-size=1M",
         "--bt-enable-lpd=false", "--enable-dht=false", "--enable-dht6=false",
+        "--max-tries=5", "--retry-wait=3",
         "--dir", str(out_dir), source,
     ]
     proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
@@ -122,6 +116,33 @@ async def download_with_aria2(source: str, out_dir: Path, status: Message) -> Pa
     if not largest:
         raise RuntimeError("Download finished but no file was found.")
     return largest
+
+
+async def route_download(source: str, out_dir: Path, status: Message) -> Path:
+    """Pick the right backend for a leech source:
+
+    1. Magnet / .torrent / torrent-flavoured URL -> aria2c (BitTorrent only, no substitute).
+    2. Known media/social site (YouTube, X/Twitter, Instagram, TikTok, Reddit, ...) -> yt-dlp,
+       which understands page/API extraction instead of just fetching bytes.
+    3. Anything else that looks like a plain file URL -> the fast parallel-range HTTP downloader.
+    """
+    if _is_torrentish(source):
+        return await download_with_aria2(source, out_dir, status)
+
+    if looks_like_ytdlp_source(source):
+        if is_ytdlp_available():
+            return await download_with_ytdlp(source, out_dir, status)
+        # yt-dlp missing: still attempt a raw HTTP fetch in case the "link" is
+        # actually a direct file (some hosts serve both page and file URLs).
+        try:
+            return await download_direct_http_fast(source, out_dir, status)
+        except Exception:
+            raise RuntimeError(
+                "yt-dlp is not installed on this dyno, so this social/media-site link can't be "
+                "extracted. Add `yt-dlp` to requirements.txt and redeploy, or use a direct file URL."
+            )
+
+    return await download_direct_http_fast(source, out_dir, status)
 
 
 async def prepare_branding(file_path: Path, thumb: str | None, status: Message) -> Path:
@@ -173,7 +194,7 @@ async def run_leech_job(client: Client, message: Message, source: str, target_ch
     workdir = LEECH_ROOT / f"job_{message.chat.id}_{message.id}_{int(time.time())}"
     workdir.mkdir(parents=True, exist_ok=True)
     try:
-        file_path = await download_with_aria2(source, workdir, status)
+        file_path = await route_download(source, workdir, status)
         await upload_leech_file(client, message, file_path, status, target_chats=target_chats)
         await status.edit("✅ **Leech complete!**", reply_markup=leech_keyboard())
     except Exception as e:
@@ -211,16 +232,26 @@ async def leech_cmd(client: Client, message: Message):
         if sources:
             source = sources[0]
         elif message.reply_to_message.document:
-            status = await message.reply_text("📥 Downloading torrent/control file...", reply_markup=leech_keyboard())
+            # Fetch the replied .torrent/control file the same way /link would serve it:
+            # mint a temporary stream token for the message and pull it over HTTP,
+            # instead of downloading it straight from Telegram via MTProto.
+            status = await message.reply_text("📥 Fetching torrent/control file via link...", reply_markup=leech_keyboard())
             workdir = LEECH_ROOT / f"job_{message.id}_torrent"
             workdir.mkdir(parents=True, exist_ok=True)
-            source = await client.download_media(message.reply_to_message, file_name=str(workdir / get_media_name(message.reply_to_message)))
-            await status.delete()
+            dest = workdir / get_media_name(message.reply_to_message)
+            try:
+                source = await fetch_via_link(client, message.reply_to_message, str(dest), status=status, label="📥 Fetching control file...")
+            finally:
+                await status.delete()
     elif source:
         sources = extract_leech_sources(source)
         source = sources[0] if sources else source
     if not source:
-        return await message.reply_text("Usage: `/leech <direct-url|magnet|torrent-url>` or reply to a torrent file/link with `/leech`.", reply_markup=leech_keyboard())
+        return await message.reply_text(
+            "Usage: `/leech <direct-url|magnet|torrent-url|youtube/twitter/instagram/tiktok/... link>`\n"
+            "or reply to a torrent file/link with `/leech`.",
+            reply_markup=leech_keyboard(),
+        )
     await run_leech_job(client, message, source)
 
 
@@ -231,9 +262,11 @@ async def auto_queue_leech_sources(client: Client, message: Message):
     sources = extract_leech_sources(message.text or message.caption)
     source = sources[0] if sources else None
     if not source and message.document and "torrent" in get_media_name(message).lower():
+        # Same link-based fetch as above, applied to auto-queued channel .torrent files.
         workdir = LEECH_ROOT / f"channel_{message.chat.id}_{message.id}"
         workdir.mkdir(parents=True, exist_ok=True)
-        source = await client.download_media(message, file_name=str(workdir / get_media_name(message)))
+        dest = workdir / get_media_name(message)
+        source = await fetch_via_link(client, message, str(dest), label="📥 Fetching control file...")
     if not source:
         return
     await run_leech_job(client, message, source, target_chats=DESTINATION_CHANNELS)
