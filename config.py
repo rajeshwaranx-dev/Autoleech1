@@ -38,7 +38,7 @@ class Config(object):
     MAX_CONCURRENT_UPLOADS = int(os.environ.get("MAX_CONCURRENT_UPLOADS", "2"))
     MIN_TRANSFER_SPEED_MBPS = float(os.environ.get("MIN_TRANSFER_SPEED_MBPS", "4"))
     SPEED_CHECK_GRACE_SECONDS = int(os.environ.get("SPEED_CHECK_GRACE_SECONDS", "20"))
-    MAX_UPLOAD_SIZE = int(float(os.environ.get("MAX_UPLOAD_SIZE_GB", "2")) * 1024 * 1024 * 1024)
+    MAX_UPLOAD_SIZE = int(float(os.environ.get("MAX_UPLOAD_SIZE_GB", "4")) * 1024 * 1024 * 1024)
     PREMIUM_SESSION_STRING = os.environ.get("PREMIUM_SESSION_STRING", "")
     ENABLE_MEDIA_BRANDING = bool(int(os.environ.get("ENABLE_MEDIA_BRANDING", "1")))
     WATERMARK_TEXT = os.environ.get("WATERMARK_TEXT", "Join @MNTGX in Telegram")
