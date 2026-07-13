@@ -2,6 +2,7 @@ import asyncio
 import os
 from pathlib import Path
 from typing import Optional
+import json
 
 from config import Config
 
@@ -22,20 +23,40 @@ async def run_cmd(*cmd: str) -> tuple[int, str, str]:
     return proc.returncode, out.decode(errors="ignore"), err.decode(errors="ignore")
 
 
-async def add_video_branding(input_path: str, output_path: str, watermark_text: str, metadata_text: str) -> str:
-    """Add a small centered text watermark and Telegram-facing metadata to a video.
+async def get_video_duration(input_path: str) -> float:
+    """Return video duration in seconds, or 0 when ffprobe cannot read it."""
+    code, out, _ = await run_cmd(
+        "ffprobe", "-v", "error", "-show_entries", "format=duration",
+        "-of", "json", input_path,
+    )
+    if code != 0:
+        return 0.0
+    try:
+        return float(json.loads(out).get("format", {}).get("duration") or 0)
+    except Exception:
+        return 0.0
 
-    Falls back to stream-copy metadata only when drawtext is unavailable. Returns the
-    path that should be uploaded.
+
+async def add_video_branding(input_path: str, output_path: str, watermark_text: str, metadata_text: str) -> str:
+    """Add bottom-center watermark text and Telegram-facing metadata to a video.
+
+    The watermark is visible for the whole video when the video is 5 minutes or
+    shorter. For longer videos, it is visible only for the first 5% of runtime.
+    Falls back to stream-copy metadata only when drawtext is unavailable. Returns
+    the path that should be uploaded.
     """
     if not watermark_text:
-        watermark_text = "@MNTGX"
-    font = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+        watermark_text = metadata_text or "Join @MNTGX in Telegram"
+    duration = await get_video_duration(input_path)
+    watermark_until = duration if 0 < duration <= 300 else duration * 0.05
+    enable_expr = f":enable='between(t,0,{watermark_until:.3f})'" if watermark_until > 0 else ""
+    font = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
     escaped = watermark_text.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
     drawtext = (
         f"drawtext=fontfile={font}:text='{escaped}':"
-        r"x=(w-text_w)/2:y=(h-text_h)/2:fontsize=max(18\,h/32):"
-        "fontcolor=white@0.42:borderw=2:bordercolor=black@0.25"
+        r"x=(w-text_w)/2:y=h-text_h-(h*0.055):fontsize=max(22\,h/24):"
+        "fontcolor=white@0.78:borderw=2:bordercolor=black@0.35"
+        f"{enable_expr}"
     )
     cmd = [
         "ffmpeg", "-y", "-threads", str(Config.FFMPEG_THREADS), "-i", input_path, "-vf", drawtext,

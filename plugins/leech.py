@@ -18,7 +18,7 @@ from helper.multi_downloader import (
 )
 from helper.stream_links import build_stream_url, register_stream
 from helper.telegram_fetch import fetch_via_link
-from helper.utils import download_thumbnail, humanbytes, progress_for_pyrogram
+from helper.utils import download_thumbnail, humanbytes, progress_for_pyrogram, render_completed_status
 from plugins.file_rename import (
     DESTINATION_CHANNELS,
     SOURCE_CHANNELS,
@@ -168,25 +168,21 @@ async def upload_leech_file(client: Client, message: Message, file_path: Path, s
     cover = make_cover_image(str(LEECH_ROOT / f"cover_{message.id}.jpg"), upload_path.name, thumb, Config.METADATA_TEXT)
     caption = f"📦 **{upload_path.name}**\n💾 Size: `{humanbytes(upload_path.stat().st_size)}`\n\n{Config.METADATA_TEXT}"
     await status.edit("📤 **Uploading leech file...**", reply_markup=leech_keyboard())
+    status.progress_name = upload_path.name
+    status.progress_user = "MN  -  TG"
+    status.progress_user_id = message.from_user.id if message.from_user else (Config.ADMIN[0] if Config.ADMIN else "N/A")
+    uploader = getattr(client, "upload_client", client)
     async with upload_semaphore:
         for chat_id in target_chats:
             if Config.SEND_COVER_BEFORE_UPLOAD and cover:
                 await client.send_photo(chat_id, cover, caption="🖼️ Cover preview")
-            if is_video_file(str(upload_path)):
-                await run_with_floodwait_retry(lambda chat_id=chat_id: client.send_video(
-                    chat_id, str(upload_path), caption=caption,
-                    thumb=thumb if thumb and os.path.exists(thumb) else None,
-                    supports_streaming=True,
-                    progress=progress_for_pyrogram,
-                    progress_args=("📤 Uploading leech...", status, time.time(), 0, 20),
-                ), "leech video upload")
-            else:
-                await run_with_floodwait_retry(lambda chat_id=chat_id: client.send_document(
-                    chat_id, str(upload_path), caption=caption,
-                    thumb=thumb if thumb and os.path.exists(thumb) else None,
-                    progress=progress_for_pyrogram,
-                    progress_args=("📤 Uploading leech...", status, time.time(), 0, 20),
-                ), "leech document upload")
+            await run_with_floodwait_retry(lambda chat_id=chat_id: uploader.send_document(
+                chat_id, str(upload_path), caption=caption,
+                file_name=upload_path.name,
+                thumb=thumb if thumb and os.path.exists(thumb) else None,
+                progress=progress_for_pyrogram,
+                progress_args=("📤 Uploading file...", status, time.time(), 0, 20),
+            ), "leech document upload")
 
 
 async def run_leech_job(client: Client, message: Message, source: str, target_chats: list[int | str] | None = None):
@@ -195,8 +191,20 @@ async def run_leech_job(client: Client, message: Message, source: str, target_ch
     workdir.mkdir(parents=True, exist_ok=True)
     try:
         file_path = await route_download(source, workdir, status)
+        started = time.time()
         await upload_leech_file(client, message, file_path, status, target_chats=target_chats)
-        await status.edit("✅ **Leech complete!**", reply_markup=leech_keyboard())
+        await status.edit(
+            render_completed_status(
+                file_path.name,
+                file_path.stat().st_size if file_path.exists() else 0,
+                started,
+                mode="#Leech | #Tg",
+                total_files=1,
+                by=f"{message.from_user.mention if message.from_user else 'Unknown'}",
+                sent_to_pm=not target_chats,
+            ),
+            reply_markup=leech_keyboard(),
+        )
     except Exception as e:
         await status.edit(f"❌ **Leech failed:** `{str(e)[:900]}`", reply_markup=leech_keyboard())
     finally:
