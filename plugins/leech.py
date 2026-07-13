@@ -156,11 +156,17 @@ async def prepare_branding(file_path: Path, thumb: str | None, status: Message) 
 
 async def upload_leech_file(client: Client, message: Message, file_path: Path, status: Message, target_chats: list[int | str] | None = None):
     size = file_path.stat().st_size
-    if size > Config.MAX_UPLOAD_SIZE:
-        raise RuntimeError(
-            f"File is {humanbytes(size)} but MAX_UPLOAD_SIZE is {humanbytes(Config.MAX_UPLOAD_SIZE)}. "
-            "For 2GB+ uploads configure PREMIUM_SESSION_STRING and run as a user-capable Pyrogram client."
+    limit = Config.effective_max_upload_size()
+    if size > limit:
+        hint = (
+            "Configure PREMIUM_SESSION_STRING with a session from an account that has an "
+            "active Telegram Premium subscription to raise this to 4GB (the session string "
+            "alone doesn't help unless the account is genuinely Premium -- Telegram caps "
+            "regular accounts, bot or user, at 2GB either way)."
+            if not Config.PREMIUM_SESSION_STRING
+            else "This already reflects the 4GB Premium ceiling; Telegram does not allow larger single-file uploads."
         )
+        raise RuntimeError(f"File is {humanbytes(size)} but the effective upload limit is {humanbytes(limit)}. {hint}")
     target_chats = target_chats or [message.chat.id]
     thumb_file = str(LEECH_ROOT / f"thumb_{message.id}.jpg")
     thumb = await download_thumbnail(Config.GLOBAL_THUMBNAIL_URL, thumb_file) if Config.GLOBAL_THUMBNAIL_URL else None
