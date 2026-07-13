@@ -120,9 +120,10 @@ async def download_with_ytdlp(source: str, out_dir: Path, status) -> Path:
         "retries": 5,
         "fragment_retries": 5,
         # Cap resolution by default: uncapped best-quality selection can pick 4K/8K
-        # sources that are slow to download, memory-heavy for ffmpeg to merge on a
-        # small dyno, and likely to blow past MAX_UPLOAD_SIZE anyway (Telegram bot
-        # uploads default to a 2GB ceiling). Raise YTDLP_MAX_HEIGHT for bigger dynos.
+        # sources that are slow to download and memory-heavy for ffmpeg to merge on a
+        # small dyno, and can still exceed the effective upload ceiling (2GB, or 4GB
+        # with a genuinely Premium PREMIUM_SESSION_STRING -- see
+        # Config.effective_max_upload_size). Raise YTDLP_MAX_HEIGHT for bigger dynos.
         "format": f"bv*[height<={YTDLP_MAX_HEIGHT}]+ba/b[height<={YTDLP_MAX_HEIGHT}]/bv*+ba/b",
         "merge_output_format": "mp4",
     }
