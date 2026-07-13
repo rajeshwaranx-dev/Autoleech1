@@ -35,7 +35,7 @@ class Bot(Client):
             BotCommand("start", "Open the rich dashboard"),
             BotCommand("help", "Show all commands"),
             BotCommand("mntgx", "Admin feature panel"),
-            BotCommand("leech", "Leech direct/torrent/magnet links"),
+            BotCommand("leech", "Leech direct/torrent/magnet/YouTube/social links"),
             BotCommand("link", "Create a temporary Telegram file link"),
             BotCommand("stats", "Queue and speed stats"),
             BotCommand("addque", "Bulk import Telegram messages"),
