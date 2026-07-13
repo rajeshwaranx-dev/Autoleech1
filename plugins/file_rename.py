@@ -49,7 +49,6 @@ SOURCE_CHANNELS = [
 ]
 
 DESTINATION_CHANNELS = ["-1003582579076"]  # Where to upload renamed files
-MAX_FILE_SIZE = Config.MAX_UPLOAD_SIZE  # Telegram bot default is 2GB; raise only with user-session upload support.
 ADMIN_ID = 1892771262  # Admin user ID for status updates
 MAX_CONCURRENT_DOWNLOADS = min(5, max(1, Config.MAX_CONCURRENT_DOWNLOADS))  # Hard cap at 5
 MAX_CONCURRENT_UPLOADS = min(5, max(1, Config.MAX_CONCURRENT_UPLOADS))  # Hard cap at 5
@@ -381,16 +380,19 @@ async def monitor_channel(client: Client, message: Message):
     
     file_size = media.file_size or 0
     file_name = media.file_name or f"media_{message.id}"
-    
-    # Skip files larger than 2GB
-    if file_size > MAX_FILE_SIZE:
+    upload_limit = Config.effective_max_upload_size()
+
+    # Skip files larger than the effective upload limit (2GB baseline, 4GB if a
+    # genuinely Premium PREMIUM_SESSION_STRING is configured -- see
+    # Config.effective_max_upload_size for details).
+    if file_size > upload_limit:
         skip_msg = (
             f"⏭️ **File Skipped (Too Large)**\n\n"
             f"📺 Source: `{source_channel}`\n"
             f"📄 File: `{file_name}`\n"
             f"📦 Size: {file_size / (1024*1024*1024):.2f} GB\n"
             f"🆔 Message ID: `{message.id}`\n"
-            f"⚠️ Reason: Exceeds 2GB limit"
+            f"⚠️ Reason: Exceeds {upload_limit / (1024*1024*1024):.0f}GB limit"
         )
         await send_admin_message(client, skip_msg)
         print(f"[SKIP] File too large from {source_channel}: {file_name} ({file_size / (1024*1024*1024):.2f} GB)")
@@ -460,7 +462,7 @@ async def resume_queued_jobs(client: Client):
                 continue
             
             # Skip if file is too large
-            if (media.file_size or 0) > MAX_FILE_SIZE:
+            if (media.file_size or 0) > Config.effective_max_upload_size():
                 print(f"[SKIP] Removing oversized job from DB: {media.file_name}")
                 await mnbots.remove_job(BOT_ID, job["chat_id"], job["message_id"])
                 continue
@@ -736,7 +738,7 @@ async def add_queue_from_links(client: Client, message: Message):
             if not msg or not media:
                 skipped += 1
                 continue
-            if (media.file_size or 0) > MAX_FILE_SIZE:
+            if (media.file_size or 0) > Config.effective_max_upload_size():
                 skipped += 1
                 continue
             job_key = make_job_key(msg.chat.id, msg.id)
