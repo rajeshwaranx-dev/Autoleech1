@@ -10,7 +10,6 @@ from pyrogram.errors import MessageNotModified, PeerIdInvalid, FloodWait
 from helper.utils import progress_for_pyrogram, download_thumbnail, render_completed_status
 from helper.media_tools import add_video_branding, is_video_file, make_cover_image
 from helper.database import mnbots
-from helper.telegram_fetch import fetch_via_link
 from config import Config
 
 BOT_ID = None
@@ -131,15 +130,30 @@ async def run_with_floodwait_retry(coro_factory, task_name: str, retries: int = 
 async def ensure_non_zero_download(client: Client, message: Message, download_path: str, status_msg: Message):
     """Download with retries and validate on-disk size to prevent 0B uploads.
 
-    Fetches via a temporary stream link (the same mechanism as /link) rather than
-    pulling the file straight through MTProto, so channel-queue downloads get the
-    same parallel range-request speedup as direct-link leeching. fetch_via_link
-    reports its own progress onto status_msg and falls back to a direct Pyrogram
-    download automatically if the self-serve HTTP path is unavailable.
+    Uses a direct Pyrogram MTProto download rather than routing through the
+    stream-link mechanism: fetching a Telegram-origin file via a self-served HTTP
+    link still has to make the exact same underlying MTProto stream_media() call to
+    get the bytes from Telegram in the first place, just wrapped in an extra HTTP hop
+    to the bot's own server (a real public round-trip if BASE_URL is set, not just
+    loopback). That can only add overhead here, never speed up the actual Telegram
+    fetch, so the direct path is faster for this specific case. The stream-link
+    mechanism (helper.telegram_fetch.fetch_via_link) is still the right tool for
+    /link and for re-serving a Telegram file to something outside the bot.
     """
     for attempt in range(1, 4):
         await run_with_floodwait_retry(
-            lambda: fetch_via_link(client, message, download_path, status=status_msg, label="📥 Downloading..."),
+            lambda: client.download_media(
+                message=message,
+                file_name=download_path,
+                progress=progress_for_pyrogram,
+                progress_args=(
+                    "📥 Downloading...",
+                    status_msg,
+                    time.time(),
+                    MIN_TRANSFER_SPEED_BPS,
+                    SPEED_CHECK_GRACE_SECONDS,
+                ),
+            ),
             task_name=f"Download {message.id}",
         )
         local_size = os.path.getsize(download_path) if os.path.exists(download_path) else 0
@@ -505,8 +519,6 @@ async def queue_and_speed_stats(client: Client, message: Message):
         [f"• `{get_channel_name(chat_id)}` (`{chat_id}`): {count}" for chat_id, count in source_counts.items()]
     ) or "• No queued files."
     pending_bytes = sum(get_message_media_size(msg) for msg in channel_jobs.values())
-    avg_download = format_mb_speed(transfer_stats["download_bytes"], transfer_stats["download_time"])
-    avg_upload = format_mb_speed(transfer_stats["upload_bytes"], transfer_stats["upload_time"])
     dl_bps = transfer_stats["download_bytes"] / transfer_stats["download_time"] if transfer_stats["download_time"] > 0 else 0
     ul_bps = transfer_stats["upload_bytes"] / transfer_stats["upload_time"] if transfer_stats["upload_time"] > 0 else 0
     effective_bps = min(v for v in (dl_bps, ul_bps) if v > 0) if (dl_bps > 0 or ul_bps > 0) else 0
@@ -517,9 +529,6 @@ async def queue_and_speed_stats(client: Client, message: Message):
     stats_text = (
         f"📊 **MNTGX Queue Stats**\n\n"
         f"⚙️ Max Concurrent: `{MAX_CONCURRENT_DOWNLOADS}`\n"
-        f"⚡ Min Speed Target: `{Config.MIN_TRANSFER_SPEED_MBPS} MB/s`\n"
-        f"📥 Avg Download Speed: `{avg_download}`\n"
-        f"📤 Avg Upload Speed: `{avg_upload}`\n"
         f"🧾 Queue Total: `{len(channel_jobs)}`\n"
         f"🔄 Active Now: `{await get_active_download_count()}`\n"
         f"⏱️ Approx queue completion: `{eta_text}`\n"
