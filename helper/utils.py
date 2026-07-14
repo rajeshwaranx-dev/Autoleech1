@@ -107,7 +107,7 @@ def render_transfer_progress(
 
 def render_completed_status(
     name: str, size: int, start: float, mode: str = "#Leech | #Tg", total_files: int = 1,
-    by: str = "@Rashimika_madanna777", sent_to_pm: bool = True,
+    by: str = "@MNTGX", sent_to_pm: bool = True,
 ) -> str:
     elapsed = TimeFormatter(int((time.time() - start) * 1000))
     destination = "Bot PM (Private)" if sent_to_pm else "target chat"
@@ -119,8 +119,6 @@ def render_completed_status(
         f"├**Mode:** {mode}\n"
         f"├**Total Files:** {total_files}\n"
         f"└**By:** {by}\n\n"
-        "➲ *File(s) have been Sent. Access via Links...*\n"
-        f"➲ *File(s) have been Sent to {destination}*\n"
         f"1. {name}"
     )
 
