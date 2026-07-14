@@ -17,7 +17,6 @@ from helper.multi_downloader import (
     looks_like_ytdlp_source,
 )
 from helper.stream_links import build_stream_url, register_stream
-from helper.telegram_fetch import fetch_via_link
 from helper.utils import download_thumbnail, humanbytes, progress_for_pyrogram, render_completed_status
 from plugins.file_rename import (
     DESTINATION_CHANNELS,
@@ -246,15 +245,17 @@ async def leech_cmd(client: Client, message: Message):
         if sources:
             source = sources[0]
         elif message.reply_to_message.document:
-            # Fetch the replied .torrent/control file the same way /link would serve it:
-            # mint a temporary stream token for the message and pull it over HTTP,
-            # instead of downloading it straight from Telegram via MTProto.
-            status = await message.reply_text("📥 Fetching torrent/control file via link...", reply_markup=leech_keyboard())
+            # Fetch the replied .torrent/control file directly. A stream-link fetch
+            # would still have to make the same underlying MTProto call to get the
+            # bytes from Telegram, just wrapped in an extra self-HTTP hop -- no
+            # upside for a file this small, so keep it simple.
+            status = await message.reply_text("📥 Fetching torrent/control file...", reply_markup=leech_keyboard())
             workdir = LEECH_ROOT / f"job_{message.id}_torrent"
             workdir.mkdir(parents=True, exist_ok=True)
             dest = workdir / get_media_name(message.reply_to_message)
             try:
-                source = await fetch_via_link(client, message.reply_to_message, str(dest), status=status, label="📥 Fetching control file...")
+                await client.download_media(message=message.reply_to_message, file_name=str(dest))
+                source = str(dest)
             finally:
                 await status.delete()
     elif source:
@@ -276,11 +277,12 @@ async def auto_queue_leech_sources(client: Client, message: Message):
     sources = extract_leech_sources(message.text or message.caption)
     source = sources[0] if sources else None
     if not source and message.document and "torrent" in get_media_name(message).lower():
-        # Same link-based fetch as above, applied to auto-queued channel .torrent files.
+        # Same direct fetch as above, applied to auto-queued channel .torrent files.
         workdir = LEECH_ROOT / f"channel_{message.chat.id}_{message.id}"
         workdir.mkdir(parents=True, exist_ok=True)
         dest = workdir / get_media_name(message)
-        source = await fetch_via_link(client, message, str(dest), label="📥 Fetching control file...")
+        await client.download_media(message=message, file_name=str(dest))
+        source = str(dest)
     if not source:
         return
     await run_leech_job(client, message, source, target_chats=DESTINATION_CHANNELS)
