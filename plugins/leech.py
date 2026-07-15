@@ -17,7 +17,6 @@ from helper.multi_downloader import (
     looks_like_ytdlp_source,
 )
 from helper.stream_links import build_stream_url, register_stream
-from helper.telegram_fetch import fetch_via_link
 from helper.utils import download_thumbnail, humanbytes, progress_for_pyrogram, render_completed_status
 from plugins.file_rename import (
     DESTINATION_CHANNELS,
@@ -156,11 +155,17 @@ async def prepare_branding(file_path: Path, thumb: str | None, status: Message) 
 
 async def upload_leech_file(client: Client, message: Message, file_path: Path, status: Message, target_chats: list[int | str] | None = None):
     size = file_path.stat().st_size
-    if size > Config.MAX_UPLOAD_SIZE:
-        raise RuntimeError(
-            f"File is {humanbytes(size)} but MAX_UPLOAD_SIZE is {humanbytes(Config.MAX_UPLOAD_SIZE)}. "
-            "For 2GB+ uploads configure PREMIUM_SESSION_STRING and run as a user-capable Pyrogram client."
+    limit = Config.effective_max_upload_size()
+    if size > limit:
+        hint = (
+            "Configure PREMIUM_SESSION_STRING with a session from an account that has an "
+            "active Telegram Premium subscription to raise this to 4GB (the session string "
+            "alone doesn't help unless the account is genuinely Premium -- Telegram caps "
+            "regular accounts, bot or user, at 2GB either way)."
+            if not Config.PREMIUM_SESSION_STRING
+            else "This already reflects the 4GB Premium ceiling; Telegram does not allow larger single-file uploads."
         )
+        raise RuntimeError(f"File is {humanbytes(size)} but the effective upload limit is {humanbytes(limit)}. {hint}")
     target_chats = target_chats or [message.chat.id]
     thumb_file = str(LEECH_ROOT / f"thumb_{message.id}.jpg")
     thumb = await download_thumbnail(Config.GLOBAL_THUMBNAIL_URL, thumb_file) if Config.GLOBAL_THUMBNAIL_URL else None
@@ -240,15 +245,17 @@ async def leech_cmd(client: Client, message: Message):
         if sources:
             source = sources[0]
         elif message.reply_to_message.document:
-            # Fetch the replied .torrent/control file the same way /link would serve it:
-            # mint a temporary stream token for the message and pull it over HTTP,
-            # instead of downloading it straight from Telegram via MTProto.
-            status = await message.reply_text("📥 Fetching torrent/control file via link...", reply_markup=leech_keyboard())
+            # Fetch the replied .torrent/control file directly. A stream-link fetch
+            # would still have to make the same underlying MTProto call to get the
+            # bytes from Telegram, just wrapped in an extra self-HTTP hop -- no
+            # upside for a file this small, so keep it simple.
+            status = await message.reply_text("📥 Fetching torrent/control file...", reply_markup=leech_keyboard())
             workdir = LEECH_ROOT / f"job_{message.id}_torrent"
             workdir.mkdir(parents=True, exist_ok=True)
             dest = workdir / get_media_name(message.reply_to_message)
             try:
-                source = await fetch_via_link(client, message.reply_to_message, str(dest), status=status, label="📥 Fetching control file...")
+                await client.download_media(message=message.reply_to_message, file_name=str(dest))
+                source = str(dest)
             finally:
                 await status.delete()
     elif source:
@@ -270,11 +277,12 @@ async def auto_queue_leech_sources(client: Client, message: Message):
     sources = extract_leech_sources(message.text or message.caption)
     source = sources[0] if sources else None
     if not source and message.document and "torrent" in get_media_name(message).lower():
-        # Same link-based fetch as above, applied to auto-queued channel .torrent files.
+        # Same direct fetch as above, applied to auto-queued channel .torrent files.
         workdir = LEECH_ROOT / f"channel_{message.chat.id}_{message.id}"
         workdir.mkdir(parents=True, exist_ok=True)
         dest = workdir / get_media_name(message)
-        source = await fetch_via_link(client, message, str(dest), label="📥 Fetching control file...")
+        await client.download_media(message=message, file_name=str(dest))
+        source = str(dest)
     if not source:
         return
     await run_leech_job(client, message, source, target_chats=DESTINATION_CHANNELS)
