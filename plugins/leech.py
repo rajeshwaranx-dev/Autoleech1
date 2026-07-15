@@ -15,6 +15,7 @@ from helper.multi_downloader import (
     download_with_ytdlp,
     is_ytdlp_available,
     looks_like_ytdlp_source,
+    rewrite_to_direct_url,
 )
 from helper.stream_links import build_stream_url, register_stream
 from helper.utils import download_thumbnail, humanbytes, progress_for_pyrogram, render_completed_status
@@ -121,12 +122,18 @@ async def route_download(source: str, out_dir: Path, status: Message) -> Path:
     """Pick the right backend for a leech source:
 
     1. Magnet / .torrent / torrent-flavoured URL -> aria2c (BitTorrent only, no substitute).
-    2. Known media/social site (YouTube, X/Twitter, Instagram, TikTok, Reddit, ...) -> yt-dlp,
-       which understands page/API extraction instead of just fetching bytes.
-    3. Anything else that looks like a plain file URL -> the fast parallel-range HTTP downloader.
+    2. Share link from a host with a confirmed direct-download API behind it (currently
+       Pixeldrain) -> rewritten to the real endpoint, then handled as a direct link.
+    3. Known media/social site (YouTube, X/Twitter, Instagram, TikTok, Reddit, GoFile, ...)
+       -> yt-dlp, which understands page/API extraction instead of just fetching bytes.
+    4. Anything else that looks like a plain file URL -> the fast parallel-range HTTP downloader.
     """
     if _is_torrentish(source):
         return await download_with_aria2(source, out_dir, status)
+
+    direct_url = rewrite_to_direct_url(source)
+    if direct_url:
+        return await download_direct_http_fast(direct_url, out_dir, status)
 
     if looks_like_ytdlp_source(source):
         if is_ytdlp_available():
@@ -145,7 +152,13 @@ async def route_download(source: str, out_dir: Path, status: Message) -> Path:
 
 
 async def prepare_branding(file_path: Path, thumb: str | None, status: Message) -> Path:
-    if not Config.ENABLE_MEDIA_BRANDING or not is_video_file(str(file_path)):
+    if not is_video_file(str(file_path)):
+        return file_path
+    if not Config.ENABLE_MEDIA_BRANDING:
+        # See the matching note in plugins/file_rename.py: this is the most common
+        # cause of "watermark not added" reports, and the feature itself works --
+        # it's just off by default. Log it explicitly instead of skipping silently.
+        print(f"[INFO] Skipping watermark for {file_path.name}: ENABLE_MEDIA_BRANDING is not set to 1.")
         return file_path
     await status.edit("🎨 **Adding watermark + metadata...**", reply_markup=leech_keyboard())
     branded = file_path.with_name(f"branded_{file_path.name}")
