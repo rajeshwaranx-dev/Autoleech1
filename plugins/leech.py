@@ -171,7 +171,14 @@ async def download_with_aria2(source: str, out_dir: Path, status: Message) -> Pa
     cmd = [
         aria2, "--seed-time=0", "--summary-interval=5", "--console-log-level=warn",
         f"--max-connection-per-server={Config.ARIA2_SPLIT}", f"--split={Config.ARIA2_SPLIT}", "--min-split-size=1M",
-        "--bt-enable-lpd=false", "--enable-dht=false", "--enable-dht6=false",
+        # DHT is the primary peer-discovery fallback for magnets whose embedded
+        # trackers are slow, overloaded, or dead -- extremely common for the kind of
+        # scene-release magnets this bot leeches. Disabling it (as this used to)
+        # leaves aria2c with zero way to find peers when trackers don't respond,
+        # producing a permanent "CN:0 SD:0 DL:0B" hang -- this is the exact failure
+        # mode documented in aria2/aria2 issue #458. LPD (local peer discovery) stays
+        # off since it only helps on a LAN, which a cloud dyno never has.
+        "--bt-enable-lpd=false", "--enable-dht=true", "--enable-dht6=true",
         "--max-tries=5", "--retry-wait=3",
         # Defense in depth against a wedged job: aria2c itself gives up if there's no
         # download activity for this many seconds (e.g. a magnet with zero peers),
@@ -179,10 +186,12 @@ async def download_with_aria2(source: str, out_dir: Path, status: Message) -> Pa
         f"--bt-stop-timeout={ARIA2_IDLE_STOP_SECONDS}",
         "--dir", str(out_dir), source,
     ]
+    cn_re = re.compile(r"CN:(\d+)")
     proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
     last_edit = 0.0
     output_tail = ""
     job_deadline = time.time() + ARIA2_MAX_JOB_SECONDS
+    zero_peers_since: float | None = None
     try:
         while True:
             if time.time() > job_deadline:
@@ -201,7 +210,35 @@ async def download_with_aria2(source: str, out_dir: Path, status: Message) -> Pa
                 )
             if not line:
                 break
-            output_tail = (output_tail + line.decode(errors="ignore"))[-1200:]
+            decoded = line.decode(errors="ignore")
+            output_tail = (output_tail + decoded)[-1200:]
+
+            # The silence guard above only catches aria2c going fully quiet. It does
+            # NOT catch a torrent that keeps emitting periodic summary lines (every
+            # --summary-interval=5s) while genuinely stuck at zero peer connections
+            # (e.g. dead trackers with DHT still bootstrapping, or a magnet with no
+            # real seeders at all) -- each line resets the silence timer even though
+            # no real progress is happening. Track CN: (connection count) separately:
+            # if it stays at zero for the same stall window, abort with a specific,
+            # actionable message instead of leaving the job to hang until the
+            # multi-hour job ceiling or an external interruption (a Heroku restart,
+            # etc.) kills it uncleanly.
+            cn_match = cn_re.search(decoded)
+            if cn_match:
+                if int(cn_match.group(1)) > 0:
+                    zero_peers_since = None
+                else:
+                    now = time.time()
+                    if zero_peers_since is None:
+                        zero_peers_since = now
+                    elif now - zero_peers_since > ARIA2_STALL_TIMEOUT_SECONDS:
+                        raise RuntimeError(
+                            f"No peers found for {ARIA2_STALL_TIMEOUT_SECONDS}s (CN:0 the whole time) -- "
+                            "this magnet's trackers aren't responding and DHT couldn't find peers either. "
+                            "The torrent may have no active seeders, or may need more time for DHT to "
+                            "bootstrap. Try again, or use a different source."
+                        )
+
             if time.time() - last_edit > 8:
                 last_edit = time.time()
                 try:
@@ -271,6 +308,14 @@ async def prepare_branding(file_path: Path, thumb: str | None, status: Message) 
 
 
 async def upload_leech_file(client: Client, message: Message, file_path: Path, status: Message, target_chats: list[int | str] | None = None):
+    if not file_path.exists():
+        raise RuntimeError(
+            f"Downloaded file is missing at upload time: `{file_path}`. The download step "
+            "reported success but the file isn't on disk anymore -- this can happen if the "
+            "host returned an error page that looked like a valid response, or if disk space "
+            "ran out. Try the link again; if it keeps happening, check server logs for what "
+            "the download step actually wrote."
+        )
     size = file_path.stat().st_size
     limit = Config.effective_max_upload_size()
     if size > limit:
