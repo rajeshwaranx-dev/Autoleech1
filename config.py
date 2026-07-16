@@ -56,7 +56,7 @@ class Config(object):
     ENABLE_MEDIA_BRANDING = bool(int(os.environ.get("ENABLE_MEDIA_BRANDING", "1")))
     WATERMARK_TEXT = os.environ.get("WATERMARK_TEXT", "Join @MNTGX in Telegram")
     METADATA_TEXT = os.environ.get("METADATA_TEXT", "Join @MNTGX in Telegram")
-    SEND_COVER_BEFORE_UPLOAD = bool(int(os.environ.get("SEND_COVER_BEFORE_UPLOAD", "1")))
+    SEND_COVER_BEFORE_UPLOAD = bool(int(os.environ.get("SEND_COVER_BEFORE_UPLOAD", "0")))
     CLEAN_DOWNLOADS = bool(int(os.environ.get("CLEAN_DOWNLOADS", "1")))
     ARIA2_SPLIT = min(16, max(1, int(os.environ.get("ARIA2_SPLIT", "6"))))
     FFMPEG_THREADS = min(2, max(1, int(os.environ.get("FFMPEG_THREADS", "1"))))
