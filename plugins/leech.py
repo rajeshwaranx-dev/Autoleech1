@@ -32,6 +32,86 @@ LEECH_ROOT.mkdir(parents=True, exist_ok=True)
 URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
 MAGNET_RE = re.compile(r"magnet:\?\S+", re.IGNORECASE)
 
+# Max seconds aria2c can go without producing a line of output before it's considered
+# stalled and killed. Resets on every line, so a torrent that's still actively
+# downloading (however slowly) is never affected -- only a subprocess gone fully silent.
+ARIA2_STALL_TIMEOUT_SECONDS = max(30, int(os.environ.get("ARIA2_STALL_TIMEOUT", "180")))
+# Passed to aria2c's own --bt-stop-timeout: gives up on a torrent with zero download
+# activity (e.g. no peers/seeders) for this many seconds. Defense in depth alongside
+# the Python-level stall guard above.
+ARIA2_IDLE_STOP_SECONDS = max(60, int(os.environ.get("ARIA2_IDLE_STOP", "300")))
+# Absolute ceiling on a single aria2c job regardless of activity, so a pathological
+# case that keeps barely producing output can't occupy a leech slot indefinitely.
+ARIA2_MAX_JOB_SECONDS = max(300, int(os.environ.get("ARIA2_MAX_JOB_SECONDS", str(6 * 60 * 60))))
+
+# ----------------------------------------------------------------------------
+# Leech queue — same shape as file_rename.py's file_queue/channel_jobs (a real
+# asyncio.Queue plus a visibility dict, consumed by a fixed-size worker pool)
+# instead of a semaphore wrapped around a task that's already been started. This
+# gives leech jobs actual queue position, /stats visibility, and a genuine
+# concurrency bound enforced BEFORE a job starts using resources, not just a gate
+# around a coroutine that was already scheduled.
+# ----------------------------------------------------------------------------
+
+LEECH_WORKER_COUNT = min(4, max(1, int(os.environ.get("MAX_CONCURRENT_LEECH", "2"))))
+leech_queue: asyncio.Queue = asyncio.Queue()
+leech_jobs: dict[str, dict] = {}  # job_id -> {message, source, target_chats, queued_at}
+_leech_job_counter = 0
+
+
+def _next_leech_job_id() -> str:
+    global _leech_job_counter
+    _leech_job_counter += 1
+    return f"leech_{_leech_job_counter}_{int(time.time())}"
+
+
+async def enqueue_leech_job(client: Client, message: Message, source: str, target_chats: list[int | str] | None = None) -> str:
+    """Put a leech source on the real queue and return its job ID. The status message
+    is created immediately so the person sees a response right away; the actual
+    download only starts once a worker picks the job up."""
+    job_id = _next_leech_job_id()
+    ahead = leech_queue.qsize()
+    total_tracked = len(leech_jobs) + 1
+    position_text = "🚀 **Leech job queued** — starting now" if ahead == 0 and len(leech_jobs) < LEECH_WORKER_COUNT else (
+        f"🚀 **Leech job queued** ({ahead} job{'s' if ahead != 1 else ''} ahead, {total_tracked} total)"
+    )
+    status = await message.reply_text(position_text, reply_markup=leech_keyboard())
+    leech_jobs[job_id] = {
+        "client": client,
+        "message": message,
+        "source": source,
+        "target_chats": target_chats,
+        "status": status,
+        "queued_at": time.time(),
+    }
+    await leech_queue.put(job_id)
+    return job_id
+
+
+async def leech_worker(worker_id: int):
+    print(f"[DEBUG] Leech worker {worker_id} started.")
+    while True:
+        job_id = await leech_queue.get()
+        job = leech_jobs.get(job_id)
+        if job is not None:
+            try:
+                await run_leech_job(
+                    job["client"], job["message"], job["source"],
+                    target_chats=job["target_chats"], status=job["status"],
+                )
+            except Exception as e:
+                print(f"[ERROR] Leech worker {worker_id} error on {job_id}: {e}")
+            finally:
+                leech_jobs.pop(job_id, None)
+        leech_queue.task_done()
+
+
+def start_leech_workers():
+    for i in range(LEECH_WORKER_COUNT):
+        asyncio.create_task(leech_worker(i + 1))
+    print(f"[DEBUG] Initialized {LEECH_WORKER_COUNT} leech worker(s).")
+
+
 
 def leech_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
@@ -93,22 +173,46 @@ async def download_with_aria2(source: str, out_dir: Path, status: Message) -> Pa
         f"--max-connection-per-server={Config.ARIA2_SPLIT}", f"--split={Config.ARIA2_SPLIT}", "--min-split-size=1M",
         "--bt-enable-lpd=false", "--enable-dht=false", "--enable-dht6=false",
         "--max-tries=5", "--retry-wait=3",
+        # Defense in depth against a wedged job: aria2c itself gives up if there's no
+        # download activity for this many seconds (e.g. a magnet with zero peers),
+        # independent of the Python-level stall guard below.
+        f"--bt-stop-timeout={ARIA2_IDLE_STOP_SECONDS}",
         "--dir", str(out_dir), source,
     ]
     proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
     last_edit = 0.0
     output_tail = ""
-    while True:
-        line = await proc.stdout.readline()
-        if not line:
-            break
-        output_tail = (output_tail + line.decode(errors="ignore"))[-1200:]
-        if time.time() - last_edit > 8:
-            last_edit = time.time()
+    job_deadline = time.time() + ARIA2_MAX_JOB_SECONDS
+    try:
+        while True:
+            if time.time() > job_deadline:
+                raise RuntimeError(f"aria2c job exceeded the {ARIA2_MAX_JOB_SECONDS}s ceiling and was aborted.")
             try:
-                await status.edit(f"🧲 **Leeching...**\n```{output_tail[-700:]}```", reply_markup=leech_keyboard())
-            except Exception:
-                pass
+                # A readline() with no timeout can block this coroutine forever if the
+                # subprocess goes silent without exiting -- that would wedge whichever
+                # task is awaiting this leech job indefinitely. Bound the gap between
+                # lines instead of the whole job, so a torrent that's still actively
+                # producing output can run as long as it needs to.
+                line = await asyncio.wait_for(proc.stdout.readline(), timeout=ARIA2_STALL_TIMEOUT_SECONDS)
+            except asyncio.TimeoutError:
+                raise RuntimeError(
+                    f"aria2c produced no output for {ARIA2_STALL_TIMEOUT_SECONDS}s and was aborted "
+                    "(likely a dead/unreachable torrent)."
+                )
+            if not line:
+                break
+            output_tail = (output_tail + line.decode(errors="ignore"))[-1200:]
+            if time.time() - last_edit > 8:
+                last_edit = time.time()
+                try:
+                    await status.edit(f"🧲 **Leeching...**\n```{output_tail[-700:]}```", reply_markup=leech_keyboard())
+                except Exception:
+                    pass
+    except Exception:
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+        raise
     code = await proc.wait()
     if code != 0:
         raise RuntimeError(f"aria2c failed with exit code {code}: {output_tail[-500:]}")
@@ -203,8 +307,14 @@ async def upload_leech_file(client: Client, message: Message, file_path: Path, s
             ), "leech document upload")
 
 
-async def run_leech_job(client: Client, message: Message, source: str, target_chats: list[int | str] | None = None):
-    status = await message.reply_text("🚀 **Leech job queued**", reply_markup=leech_keyboard())
+async def run_leech_job(client: Client, message: Message, source: str, target_chats: list[int | str] | None = None, status: Message | None = None):
+    if status is None:
+        status = await message.reply_text("🚀 **Leech job starting**", reply_markup=leech_keyboard())
+    else:
+        try:
+            await status.edit("🚀 **Leech job starting**", reply_markup=leech_keyboard())
+        except Exception:
+            pass
     workdir = LEECH_ROOT / f"job_{message.chat.id}_{message.id}_{int(time.time())}"
     workdir.mkdir(parents=True, exist_ok=True)
     try:
@@ -280,7 +390,7 @@ async def leech_cmd(client: Client, message: Message):
             "or reply to a torrent file/link with `/leech`.",
             reply_markup=leech_keyboard(),
         )
-    await run_leech_job(client, message, source)
+    await enqueue_leech_job(client, message, source)
 
 
 @Client.on_message(filters.channel)
@@ -288,14 +398,19 @@ async def auto_queue_leech_sources(client: Client, message: Message):
     if str(message.chat.id) not in SOURCE_CHANNELS:
         return
     sources = extract_leech_sources(message.text or message.caption)
-    source = sources[0] if sources else None
-    if not source and message.document and "torrent" in get_media_name(message).lower():
+    if not sources and message.document and "torrent" in get_media_name(message).lower():
         # Same direct fetch as above, applied to auto-queued channel .torrent files.
         workdir = LEECH_ROOT / f"channel_{message.chat.id}_{message.id}"
         workdir.mkdir(parents=True, exist_ok=True)
         dest = workdir / get_media_name(message)
         await client.download_media(message=message, file_name=str(dest))
-        source = str(dest)
-    if not source:
+        sources = [str(dest)]
+    if not sources:
         return
-    await run_leech_job(client, message, source, target_chats=DESTINATION_CHANNELS)
+    # A single channel post can legitimately list more than one link (mirrors,
+    # quality options, GoFile + Pixeldrain + direct alternatives, etc.) -- queue all
+    # of them as separate jobs rather than only the first. Each goes onto the real
+    # leech_queue, so LEECH_WORKER_COUNT bounds how many actually run at once
+    # regardless of how many get enqueued here.
+    for source in sources:
+        await enqueue_leech_job(client, message, source, target_chats=DESTINATION_CHANNELS)
