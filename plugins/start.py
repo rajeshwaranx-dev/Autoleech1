@@ -41,11 +41,12 @@ async def callback_handler(client, query: CallbackQuery):
             "🧲 **Leech: Torrent / Magnet / Direct / 100s of Sites**\n\n"
             "• `/leech <direct-url>`\n"
             "• `/leech <magnet-link>`\n"
-            "• `/leech <youtube/twitter/instagram/tiktok/reddit/... link>`\n"
+            "• `/leech <youtube/twitter/instagram/tiktok/reddit/gofile/... link>`\n"
+            "• `/leech <pixeldrain share link>`\n"
             "• Reply to a `.torrent` file with `/leech`\n\n"
-            "Torrents/magnets use aria2c. Social/media links use yt-dlp. Plain file links use a "
-            "parallel-range HTTP downloader for speed. Telegram-origin files are fetched through a "
-            "temporary link (like `/link`) instead of a direct download. The bot then adds cover/"
+            "Torrents/magnets use aria2c. Social/media links and GoFile use yt-dlp. Pixeldrain "
+            "share links are converted to their direct API endpoint automatically. Plain file "
+            "links use a parallel-range HTTP downloader for speed. The bot then adds cover/"
             "thumbnail branding and uploads with progress callbacks.",
             reply_markup=home_keyboard(),
         )

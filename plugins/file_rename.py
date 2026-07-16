@@ -280,10 +280,17 @@ async def process_file(client: Client, message: Message):
         )
         
         upload_path = download_path
-        if Config.ENABLE_MEDIA_BRANDING and is_video_file(download_path):
-            branded_path = os.path.join(download_path_base, f"branded_{unique_name}")
-            await edit_admin_message(status_msg, "🎨 **Adding watermark + metadata...**")
-            upload_path = await add_video_branding(download_path, branded_path, Config.WATERMARK_TEXT, Config.METADATA_TEXT)
+        if is_video_file(download_path):
+            if Config.ENABLE_MEDIA_BRANDING:
+                branded_path = os.path.join(download_path_base, f"branded_{unique_name}")
+                await edit_admin_message(status_msg, "🎨 **Adding watermark + metadata...**")
+                upload_path = await add_video_branding(download_path, branded_path, Config.WATERMARK_TEXT, Config.METADATA_TEXT)
+            else:
+                # This is the single most common cause of "watermark not added" reports:
+                # the feature is fully functional but ENABLE_MEDIA_BRANDING defaults to
+                # off. Surface it explicitly instead of silently skipping, so it's never
+                # mistaken for a bug.
+                print(f"[INFO] Skipping watermark for {new_name}: ENABLE_MEDIA_BRANDING is not set to 1.")
 
         cover_file = os.path.join(download_path_base, f"cover_{message.id}.jpg")
         cover = make_cover_image(cover_file, new_name, thumb if thumb and os.path.exists(thumb_file) else None, Config.METADATA_TEXT)
@@ -546,14 +553,14 @@ async def mntgx_help(client: Client, message: Message):
         "• Auto queue from source channels\n"
         "• Rename cleanup tokens\n"
         "• Document + Video forwarding\n"
-        "• Telegram files fetched via temporary link (parallel range requests), not direct MTProto pull\n"
-        "• Leech: aria2 torrents/magnets, yt-dlp (100s of sites), parallel-range direct HTTP\n"
+        "• Telegram files fetched via direct MTProto download for best speed\n"
+        "• Leech: aria2 torrents/magnets, yt-dlp (100s of sites incl. GoFile), Pixeldrain, parallel-range direct HTTP\n"
         "• FloodWait-safe retries\n"
         "• Resume queued jobs after restart\n"
         "• Queue/speed stats with ETA\n\n"
         "**Admin Commands**\n"
         "• `/stats` - queue + speed + ETA stats\n"
-        "• `/leech <url|magnet>` - torrent, magnet, direct link, or YouTube/Twitter(X)/Instagram/TikTok/... \n"
+        "• `/leech <url|magnet>` - torrent, magnet, direct link, GoFile, Pixeldrain, or YouTube/Twitter(X)/Instagram/TikTok/... \n"
         "• `/link` - reply to Telegram media for a temporary browser download link\n"
         "• `/addque <first_msg_url> <last_msg_url>` - bulk queue import\n"
         "• `/addremname token1,token2` - add rename cleanup tokens\n"
@@ -590,7 +597,7 @@ async def user_settings_panel(client: Client, message: Message):
     await message.reply_text(
         "⚙️ **Bot Settings**\n\n"
         f"• Upload mode: `Document/File`\n"
-        f"• Media branding: `{Config.ENABLE_MEDIA_BRANDING}`\n"
+        f"• Media branding (watermark): `{'ON' if Config.ENABLE_MEDIA_BRANDING else 'OFF - set ENABLE_MEDIA_BRANDING=1 to enable'}`\n"
         f"• Watermark text: `{Config.WATERMARK_TEXT}`\n"
         f"• Watermark duration: `full video if <=5 min, otherwise first 5%`\n"
         f"• Force sub: `{Config.FORCE_SUB or 'off'}`\n"

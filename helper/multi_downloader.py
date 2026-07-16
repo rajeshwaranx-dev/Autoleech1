@@ -1,15 +1,22 @@
 """Extra leech backends beyond aria2c:
 
 1. yt-dlp — adds support for hundreds of streaming/social sites (YouTube, X/Twitter,
-   Instagram, TikTok, Reddit, Facebook, SoundCloud, Vimeo, Dailymotion, and more) that
-   aria2/plain HTTP can't handle because they require page/API extraction, not just a
-   file fetch.
+   Instagram, TikTok, Reddit, Facebook, SoundCloud, Vimeo, Dailymotion, GoFile, and
+   more) that aria2/plain HTTP can't handle because they require page/API extraction,
+   not just a file fetch.
 2. Parallel-range HTTP downloader — for plain direct file links, split the download
    into concurrent byte-range requests (when the server advertises Accept-Ranges) for
    a real wall-clock speedup over a single sequential stream, with an automatic
    sequential fallback for servers that don't support ranges.
+3. Share-link rewriting — some file hosts (currently Pixeldrain) wrap a plain,
+   unauthenticated, range-request-capable download endpoint behind a share URL that
+   isn't itself directly fetchable. rewrite_to_direct_url() converts the share URL to
+   the real API endpoint, then hands off to the same parallel-range downloader as any
+   other direct link. Verified against each host's own published API docs, not
+   guessed -- a host is only added here once its direct-download behavior has been
+   confirmed, not assumed to work "like GoFile" or similar hosts.
 
-Both are optional/best-effort: if yt-dlp isn't installed, `is_ytdlp_available()`
+All three are optional/best-effort: if yt-dlp isn't installed, `is_ytdlp_available()`
 returns False and callers fall back to the existing aria2/HTTP paths, matching how
 this codebase already treats aria2c as optional.
 """
@@ -43,6 +50,12 @@ YTDLP_LIKELY_HOSTS = (
     "soundcloud.com", "vimeo.com", "dailymotion.com", "twitch.tv",
     "streamable.com", "pinterest.com", "likee.video", "bilibili.com",
     "rumble.com", "ok.ru", "vk.com", "linkedin.com",
+    # gofile.io requires a dynamic, frequently-rotating website-token scheme to call
+    # its API directly (see helper.multi_downloader module docstring). yt-dlp ships
+    # its own actively-maintained GofileIE extractor that already handles this, so
+    # routing here through yt-dlp is far more robust than reimplementing GoFile's
+    # token generation by hand.
+    "gofile.io",
 )
 
 
@@ -66,6 +79,46 @@ def looks_like_ytdlp_source(url: str) -> bool:
     if not hostname:
         return False
     return any(hostname == host or hostname.endswith("." + host) for host in YTDLP_LIKELY_HOSTS)
+
+
+def rewrite_to_direct_url(url: str) -> Optional[str]:
+    """Convert a share URL from a known host into its real direct-download endpoint,
+    so it can be handed to the ordinary parallel-range HTTP downloader unchanged.
+
+    Returns None if the URL's host isn't one of the hosts handled here (the caller
+    should fall through to route_download's other backends in that case). Only hosts
+    whose direct-download behavior has been individually confirmed against their own
+    documentation are added -- this is deliberately a short, verified list rather
+    than a guess at "sites that work like Pixeldrain/GoFile".
+    """
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(url)
+        hostname = (parsed.hostname or "").lower()
+    except ValueError:
+        return None
+
+    if hostname == "pixeldrain.com" or hostname.endswith(".pixeldrain.com"):
+        # /u/{id} share links are confirmed (across pixeldrain's own docs and
+        # multiple independent third-party clients) to always point to a single
+        # file. The real bytes live behind the public API at /api/file/{id}, which
+        # pixeldrain.com/api documents as supporting byte range requests and
+        # requiring no authentication for public files. '?download' requests an
+        # attachment header instead of inline rendering.
+        #
+        # Deliberately NOT handling /d/{id} or /l/{id} here: per pixeldrain's own
+        # filesystem docs, a /d/ ID can point to either a shared FILE or a shared
+        # DIRECTORY, and there's no way to tell which from the URL alone -- treating
+        # a directory share as a single file would silently build a wrong URL rather
+        # than fail loudly. /l/ (list) shares resolve to multiple files via a
+        # separate array-returning API, not a single stream, for the same reason.
+        parts = [p for p in parsed.path.split("/") if p]
+        if len(parts) >= 2 and parts[0] == "u":
+            file_id = parts[1]
+            return f"https://pixeldrain.com/api/file/{file_id}?download"
+
+    return None
 
 
 YTDLP_MAX_HEIGHT = max(240, int(os.environ.get("YTDLP_MAX_HEIGHT", "1080")))

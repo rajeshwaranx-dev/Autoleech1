@@ -83,7 +83,7 @@ Use the buttons below or /help to explore commands.
 /help - Command list
 /mntgx - Admin feature panel
 /stats - Queue, speed and ETA
-/leech <url|magnet> - Download and upload direct links, torrents, magnets, or YouTube/Twitter(X)/Instagram/TikTok/Reddit/Facebook/SoundCloud and 100s of other sites via yt-dlp
+/leech <url|magnet> - Download and upload direct links, torrents, magnets, GoFile, Pixeldrain, or YouTube/Twitter(X)/Instagram/TikTok/Reddit/Facebook/SoundCloud and 100s of other sites
 /link - Reply to Telegram media to create a temporary browser download link
 /torrent - Alias for /leech
 /magnet - Alias for /leech
@@ -98,7 +98,7 @@ Use the buttons below or /help to explore commands.
 
     ABOUT_TEXT = """
 **About This Bot**
-• **Bot:** MnFiles Bot
+• **Bot:** File Rename Bot
 • **Language:** Python 3
 • **Framework:** Pyrogram
 """
