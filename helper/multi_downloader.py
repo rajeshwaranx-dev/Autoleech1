@@ -24,6 +24,7 @@ this codebase already treats aria2c as optional.
 import asyncio
 import importlib.util
 import os
+import re
 import time
 from pathlib import Path
 from typing import Optional
@@ -63,6 +64,34 @@ def is_ytdlp_available() -> bool:
     return _YTDLP_AVAILABLE
 
 
+# GoFile serves actual file bytes from per-file storage-node subdomains (e.g.
+# file-na-atl-1.gofile.io, store10.gofile.io) that are DIFFERENT from the gofile.io/d/{id}
+# share-page URL yt-dlp's GofileIE extractor is built to parse. A storage-node URL is
+# already a resolved, direct download link -- there's no "page" for yt-dlp to extract
+# anything from, so it needs the plain HTTP downloader, not the yt-dlp extraction path.
+_GOFILE_STORAGE_HOST_RE = re.compile(r"^([a-z0-9-]+\.)?gofile\.io$", re.IGNORECASE)
+
+
+def is_gofile_storage_url(url: str) -> bool:
+    """True for a GoFile storage-node URL (already-resolved file bytes) as opposed to
+    a gofile.io/d/{id} share page (needs yt-dlp's extractor to resolve first)."""
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(url)
+        hostname = (parsed.hostname or "").lower()
+    except ValueError:
+        return False
+    if hostname in ("gofile.io", "www.gofile.io"):
+        return False  # this is the share-page host, not a storage node
+    if not _GOFILE_STORAGE_HOST_RE.match(hostname):
+        return False
+    # Storage-node download URLs look like /download/web/{id}/{filename} or
+    # /contents/uploadfile -- require the path to actually look like a file fetch
+    # rather than matching on hostname alone.
+    return "/download/" in parsed.path
+
+
 def looks_like_ytdlp_source(url: str) -> bool:
     """True if `url`'s hostname is (or is a subdomain of) a known yt-dlp-supported
     site. Uses real hostname parsing rather than substring matching on the whole URL:
@@ -70,6 +99,9 @@ def looks_like_ytdlp_source(url: str) -> bool:
     box.com or matrix.com (both literally contain the substring "x.com"), which would
     wrongly route a plain file link on an unrelated host into the yt-dlp backend.
     """
+    if is_gofile_storage_url(url):
+        return False
+
     from urllib.parse import urlparse
 
     try:
@@ -286,8 +318,38 @@ async def download_direct_http_fast(source: str, out_dir: Path, status) -> Path:
             await sequential_download(session, source, target, on_progress)
 
     if target.exists() and target.stat().st_size > 0:
+        _reject_if_html_masquerading_as_media(target)
         return target
     raise RuntimeError("HTTP download finished but no file was saved.")
+
+
+_MEDIA_LIKE_EXTENSIONS = {
+    ".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v", ".zip", ".rar", ".7z",
+    ".pdf", ".mp3", ".flac", ".iso", ".exe", ".apk",
+}
+_HTML_MARKERS = (b"<!doctype html", b"<html", b"<head>", b"<script")
+
+
+def _reject_if_html_masquerading_as_media(target: Path) -> None:
+    """Some hosts serve an ad/interstitial/error page with a 200 OK status instead of
+    the real file (raise_for_status() only looks at the HTTP status code, so it can't
+    catch this). If a file with a known media/binary extension actually starts with
+    HTML markers, that's what happened -- raise a clear error instead of silently
+    treating a saved webpage as a successful download.
+    """
+    if target.suffix.lower() not in _MEDIA_LIKE_EXTENSIONS:
+        return
+    try:
+        with open(target, "rb") as f:
+            head = f.read(512).lstrip().lower()
+    except OSError:
+        return
+    if any(head.startswith(marker) or marker in head[:200] for marker in _HTML_MARKERS):
+        raise RuntimeError(
+            f"The server returned a webpage instead of the file for {target.name} "
+            "(some hosts show an interstitial/ad page on the first request). Try the "
+            "link again, or use the site's direct-download option if it has one."
+        )
 
 
 async def sequential_download(session: aiohttp.ClientSession, url: str, target: Path, on_progress) -> None:
