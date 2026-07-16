@@ -281,8 +281,43 @@ def _filename_from_headers(headers, url: str) -> str:
         name = disposition.split("filename=", 1)[-1].strip('"; ')
         if name:
             return name
+
     from urllib.parse import urlparse
-    return Path(urlparse(url).path).name
+    path_name = Path(urlparse(url).path).name
+
+    # A usable path-derived filename is short and has a real extension. Long opaque
+    # tokens (Google's signed video-CDN URLs) and bare API IDs with no extension
+    # (Pixeldrain's /api/file/{id}?download, where the path's last segment IS the
+    # file ID -- this is exactly what produced a filename like "hJvEivyV" with
+    # nothing for is_video_file to recognize) fail one or both of these checks and
+    # need a synthesized name instead.
+    if path_name and len(path_name) <= 120 and "." in path_name and len(path_name.rsplit(".", 1)[-1]) <= 5:
+        return path_name
+
+    return _synthesize_filename(headers.get("Content-Type", ""))
+
+
+def _synthesize_filename(content_type: str) -> str:
+    """Build a short, safe filename (with a real extension) from a Content-Type
+    header when the URL itself doesn't provide a usable one."""
+    content_type = (content_type or "").split(";")[0].strip().lower()
+    # Python's mimetypes table maps video/x-matroska to the little-used ".mpv"
+    # rather than the ".mkv" extension virtually everyone actually uses for
+    # Matroska files; special-case it so Matroska downloads get a recognizable,
+    # correct extension that is_video_file() will actually match.
+    overrides = {
+        "video/x-matroska": ".mkv",
+        "video/mp4": ".mp4",
+        "video/webm": ".webm",
+        "video/quicktime": ".mov",
+        "video/x-msvideo": ".avi",
+        "video/x-m4v": ".m4v",
+    }
+    ext = overrides.get(content_type)
+    if ext is None:
+        import mimetypes
+        ext = mimetypes.guess_extension(content_type) or ".bin"
+    return f"download_{int(time.time())}{ext}"
 
 
 async def download_direct_http_fast(source: str, out_dir: Path, status) -> Path:
