@@ -53,7 +53,7 @@ ARIA2_MAX_JOB_SECONDS = max(300, int(os.environ.get("ARIA2_MAX_JOB_SECONDS", str
 # around a coroutine that was already scheduled.
 # ----------------------------------------------------------------------------
 
-LEECH_WORKER_COUNT = min(4, max(1, int(os.environ.get("MAX_CONCURRENT_LEECH", "2"))))
+LEECH_WORKER_COUNT = min(4, max(1, int(os.environ.get("MAX_CONCURRENT_LEECH", "10"))))
 leech_queue: asyncio.Queue = asyncio.Queue()
 leech_jobs: dict[str, dict] = {}  # job_id -> {message, source, target_chats, queued_at}
 _leech_job_counter = 0
