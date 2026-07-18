@@ -9,6 +9,8 @@ from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from config import Config
+from helper.file_splitter import part_size_for_limit, split_file_streaming
+from helper.zip_extractor import extract_zip, is_zip_file
 from helper.media_tools import add_video_branding, is_video_file, make_cover_image
 from helper.multi_downloader import (
     download_direct_http_fast,
@@ -53,7 +55,7 @@ ARIA2_MAX_JOB_SECONDS = max(300, int(os.environ.get("ARIA2_MAX_JOB_SECONDS", str
 # around a coroutine that was already scheduled.
 # ----------------------------------------------------------------------------
 
-LEECH_WORKER_COUNT = min(4, max(1, int(os.environ.get("MAX_CONCURRENT_LEECH", "10"))))
+LEECH_WORKER_COUNT = min(4, max(1, int(os.environ.get("MAX_CONCURRENT_LEECH", "2"))))
 leech_queue: asyncio.Queue = asyncio.Queue()
 leech_jobs: dict[str, dict] = {}  # job_id -> {message, source, target_chats, queued_at}
 _leech_job_counter = 0
@@ -147,7 +149,20 @@ def find_largest_file(folder: Path) -> Path | None:
 
 
 def _is_torrentish(source: str) -> bool:
-    return source.lower().startswith("magnet:?") or source.lower().endswith(".torrent") or "torrent" in source.lower()
+    lowered = source.lower()
+    if lowered.startswith("magnet:?"):
+        return True
+    if lowered.endswith(".torrent"):
+        return True
+    # The loose "torrent" substring check only makes sense for genuine remote URLs
+    # (e.g. a hosting service with "torrent" somewhere in the path) -- applying it to
+    # local filesystem paths is what caused a plain downloaded .mkv sitting in a
+    # directory Claude happened to name with "torrent" in it to be misclassified and
+    # handed to aria2c, which correctly rejected it as an unrecognized URI. A local
+    # path never starts with a URL scheme, so gate the substring check on that.
+    if lowered.startswith(("http://", "https://")) and "torrent" in lowered:
+        return True
+    return False
 
 
 async def download_with_aria2(source: str, out_dir: Path, status: Message) -> Path:
@@ -307,7 +322,7 @@ async def prepare_branding(file_path: Path, thumb: str | None, status: Message) 
     return Path(result)
 
 
-async def upload_leech_file(client: Client, message: Message, file_path: Path, status: Message, target_chats: list[int | str] | None = None):
+async def upload_leech_file(client: Client, message: Message, file_path: Path, status: Message, target_chats: list[int | str] | None = None, _is_zip_member: bool = False):
     if not file_path.exists():
         raise RuntimeError(
             f"Downloaded file is missing at upload time: `{file_path}`. The download step "
@@ -316,40 +331,120 @@ async def upload_leech_file(client: Client, message: Message, file_path: Path, s
             "ran out. Try the link again; if it keeps happening, check server logs for what "
             "the download step actually wrote."
         )
-    size = file_path.stat().st_size
-    limit = Config.effective_max_upload_size()
-    if size > limit:
-        hint = (
-            "Configure PREMIUM_SESSION_STRING with a session from an account that has an "
-            "active Telegram Premium subscription to raise this to 4GB (the session string "
-            "alone doesn't help unless the account is genuinely Premium -- Telegram caps "
-            "regular accounts, bot or user, at 2GB either way)."
-            if not Config.PREMIUM_SESSION_STRING
-            else "This already reflects the 4GB Premium ceiling; Telegram does not allow larger single-file uploads."
-        )
-        raise RuntimeError(f"File is {humanbytes(size)} but the effective upload limit is {humanbytes(limit)}. {hint}")
     target_chats = target_chats or [message.chat.id]
+
+    # Extracted files recurse back into this same function (see below) with
+    # _is_zip_member=True so a zip-inside-a-zip doesn't recursively re-extract --
+    # one level of extraction is enough; anything nested stays as a file to upload.
+    if not _is_zip_member and is_zip_file(file_path):
+        await status.edit(f"📂 **{file_path.name} is a zip -- extracting contents...**", reply_markup=leech_keyboard())
+        extract_dir = file_path.with_name(f"{file_path.stem}_extracted")
+        try:
+            result = extract_zip(file_path, extract_dir)
+        except RuntimeError as e:
+            # Zip bomb or similar rejection: fall back to uploading the zip itself
+            # rather than silently failing the whole leech job -- the person still
+            # gets their file, just not auto-extracted.
+            await status.edit(f"⚠️ **Couldn't safely extract zip:** {e}\nUploading the zip file as-is instead.", reply_markup=leech_keyboard())
+            result = None
+
+        if result is not None:
+            if not result.files:
+                raise RuntimeError("Zip archive contained no extractable files.")
+            note = f" ({result.skipped_count} entries skipped)" if result.skipped_count else ""
+            await status.edit(
+                f"📂 **Extracted {len(result.files)} file(s) from {file_path.name}{note}.** Uploading each...",
+                reply_markup=leech_keyboard(),
+            )
+            for extracted_file in result.files:
+                try:
+                    await upload_leech_file(client, message, extracted_file, status, target_chats=target_chats, _is_zip_member=True)
+                finally:
+                    extracted_file.unlink(missing_ok=True)
+            shutil.rmtree(extract_dir, ignore_errors=True)
+            return
+        # result is None: zip extraction was rejected, fall through to upload the
+        # original zip file itself via the normal single-file path below.
+
     thumb_file = str(LEECH_ROOT / f"thumb_{message.id}.jpg")
     thumb = await download_thumbnail(Config.GLOBAL_THUMBNAIL_URL, thumb_file) if Config.GLOBAL_THUMBNAIL_URL else None
+    # Branding needs the complete file (ffmpeg re-encodes the whole thing to add the
+    # watermark), so it must run before any split decision -- splitting first would
+    # hand ffmpeg a partial file. The split-vs-direct check below uses the branded
+    # file's real size, not the pre-branding estimate, since branding can change it.
     upload_path = await prepare_branding(file_path, thumb, status)
     cover = make_cover_image(str(LEECH_ROOT / f"cover_{message.id}.jpg"), upload_path.name, thumb, Config.METADATA_TEXT)
-    caption = f"📦 **{upload_path.name}**\n💾 Size: `{humanbytes(upload_path.stat().st_size)}`\n\n{Config.METADATA_TEXT}"
-    await status.edit("📤 **Uploading leech file...**", reply_markup=leech_keyboard())
-    status.progress_name = upload_path.name
-    status.progress_user = "MN  -  TG"
-    status.progress_user_id = message.from_user.id if message.from_user else (Config.ADMIN[0] if Config.ADMIN else "N/A")
+    size = upload_path.stat().st_size
+    limit = Config.effective_max_upload_size()
     uploader = getattr(client, "upload_client", client)
-    async with upload_semaphore:
-        for chat_id in target_chats:
-            if Config.SEND_COVER_BEFORE_UPLOAD and cover:
+
+    if size <= limit:
+        caption = f"📦 **{upload_path.name}**\n💾 Size: `{humanbytes(size)}`\n\n{Config.METADATA_TEXT}"
+        await status.edit("📤 **Uploading leech file...**", reply_markup=leech_keyboard())
+        status.progress_name = upload_path.name
+        status.progress_user = "MN  -  TG"
+        status.progress_user_id = message.from_user.id if message.from_user else (Config.ADMIN[0] if Config.ADMIN else "N/A")
+        async with upload_semaphore:
+            for chat_id in target_chats:
+                if Config.SEND_COVER_BEFORE_UPLOAD and cover:
+                    await client.send_photo(chat_id, cover, caption="🖼️ Cover preview")
+                await run_with_floodwait_retry(lambda chat_id=chat_id: uploader.send_document(
+                    chat_id, str(upload_path), caption=caption,
+                    file_name=upload_path.name,
+                    thumb=thumb if thumb and os.path.exists(thumb) else None,
+                    progress=progress_for_pyrogram,
+                    progress_args=("📤 Uploading file...", status, time.time(), 0, 20),
+                ), "leech document upload")
+        return
+
+    # File is too large for a single upload even at the effective (2GB/4GB) ceiling.
+    # Split into numbered parts and upload each one as it's produced, deleting it
+    # immediately after a successful upload -- see helper/file_splitter.py for why
+    # this is streamed one part at a time rather than pre-splitting everything first.
+    part_size = part_size_for_limit(limit)
+    total_parts = -(-size // part_size)
+    await status.edit(
+        f"✂️ **File is {humanbytes(size)}, over the {humanbytes(limit)} limit.**\n"
+        f"Splitting into {total_parts} parts (~{humanbytes(part_size)} each) and uploading each as it's ready...",
+        reply_markup=leech_keyboard(),
+    )
+    if Config.SEND_COVER_BEFORE_UPLOAD and cover:
+        async with upload_semaphore:
+            for chat_id in target_chats:
                 await client.send_photo(chat_id, cover, caption="🖼️ Cover preview")
-            await run_with_floodwait_retry(lambda chat_id=chat_id: uploader.send_document(
-                chat_id, str(upload_path), caption=caption,
-                file_name=upload_path.name,
-                thumb=thumb if thumb and os.path.exists(thumb) else None,
-                progress=progress_for_pyrogram,
-                progress_args=("📤 Uploading file...", status, time.time(), 0, 20),
-            ), "leech document upload")
+
+    uploaded_parts = 0
+    async for part_path, part_number, computed_total_parts in split_file_streaming(upload_path, limit):
+        try:
+            part_caption = (
+                f"📦 **{part_path.name}**\n"
+                f"💾 Part {part_number}/{computed_total_parts} • `{humanbytes(part_path.stat().st_size)}`\n"
+                f"🔗 Original: `{upload_path.name}` ({humanbytes(size)} total)\n\n{Config.METADATA_TEXT}"
+            )
+            await status.edit(
+                f"📤 **Uploading part {part_number}/{computed_total_parts}...**",
+                reply_markup=leech_keyboard(),
+            )
+            status.progress_name = part_path.name
+            status.progress_user = "MN  -  TG"
+            status.progress_user_id = message.from_user.id if message.from_user else (Config.ADMIN[0] if Config.ADMIN else "N/A")
+            async with upload_semaphore:
+                for chat_id in target_chats:
+                    await run_with_floodwait_retry(lambda chat_id=chat_id, part_path=part_path, part_caption=part_caption: uploader.send_document(
+                        chat_id, str(part_path), caption=part_caption,
+                        file_name=part_path.name,
+                        progress=progress_for_pyrogram,
+                        progress_args=(f"📤 Uploading part {part_number}/{computed_total_parts}...", status, time.time(), 0, 20),
+                    ), f"leech split-part upload {part_number}/{computed_total_parts}")
+            uploaded_parts += 1
+        finally:
+            # Delete this part right after it's uploaded (success or failure) so disk
+            # usage never grows to hold the whole split set at once -- only ever
+            # roughly one part's worth beyond the original branded file.
+            part_path.unlink(missing_ok=True)
+
+    if uploaded_parts == 0:
+        raise RuntimeError("Splitting produced no parts to upload -- the file may be empty or unreadable.")
 
 
 async def run_leech_job(client: Client, message: Message, source: str, target_chats: list[int | str] | None = None, status: Message | None = None):
@@ -413,12 +508,33 @@ async def leech_cmd(client: Client, message: Message):
         if sources:
             source = sources[0]
         elif message.reply_to_message.document:
+            replied_name = get_media_name(message.reply_to_message).lower()
+            if not (replied_name.endswith(".torrent") or "torrent" in replied_name):
+                # The replied-to document isn't actually a torrent/control file --
+                # it's just some media file. /leech's reply flow only exists to fetch
+                # .torrent control files (which need to leave Telegram to reach
+                # aria2c); it was never meant to re-leech an arbitrary Telegram
+                # document, and blindly downloading + forwarding it to aria2c here
+                # produced "Unrecognized URI or unsupported protocol" since a local
+                # file path isn't a magnet/URL aria2c can act on.
+                return await message.reply_text(
+                    f"`{message.reply_to_message.document.file_name or 'This file'}` doesn't look like a "
+                    "`.torrent` file. `/leech` (reply mode) is for fetching a `.torrent` control file so "
+                    "aria2c can download the torrent it describes -- it can't re-leech a file that's "
+                    "already on Telegram. Use `/leech <url>` for direct links, magnets, or supported sites.",
+                    reply_markup=leech_keyboard(),
+                )
             # Fetch the replied .torrent/control file directly. A stream-link fetch
             # would still have to make the same underlying MTProto call to get the
             # bytes from Telegram, just wrapped in an extra self-HTTP hop -- no
-            # upside for a file this small, so keep it simple.
+            # upside for a file this small, so keep it simple. The workdir name
+            # deliberately avoids the word "torrent" -- _is_torrentish() matches
+            # against the whole source string, and a local path containing that
+            # word (even just as part of a directory name Claude chose) would get
+            # misclassified as a torrent source the same way "torrent" anywhere in
+            # a URL does. That's exactly the bug that produced this error before.
             status = await message.reply_text("📥 Fetching torrent/control file...", reply_markup=leech_keyboard())
-            workdir = LEECH_ROOT / f"job_{message.id}_torrent"
+            workdir = LEECH_ROOT / f"job_{message.id}_ctrlfile"
             workdir.mkdir(parents=True, exist_ok=True)
             dest = workdir / get_media_name(message.reply_to_message)
             try:
@@ -432,7 +548,7 @@ async def leech_cmd(client: Client, message: Message):
     if not source:
         return await message.reply_text(
             "Usage: `/leech <direct-url|magnet|torrent-url|youtube/twitter/instagram/tiktok/... link>`\n"
-            "or reply to a torrent file/link with `/leech`.",
+            "or reply to a `.torrent` file with `/leech`.",
             reply_markup=leech_keyboard(),
         )
     await enqueue_leech_job(client, message, source)
