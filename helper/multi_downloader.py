@@ -231,12 +231,15 @@ async def download_with_ytdlp(source: str, out_dir: Path, status) -> Path:
                     raise RuntimeError(
                         "yt-dlp refuses to fetch this site: it's on yt-dlp's own deliberate "
                         "piracy blocklist, not a bug on this end. There's no override for "
-                        "this -- it's a hard-coded policy decision in yt-dlp itself. If this "
-                        "was a GoFile share link, try the actual file's direct storage URL "
-                        "instead (the store*.gofile.io/download/web/... link, not the "
-                        "gofile.io/d/... share page) -- that bypasses yt-dlp entirely and "
-                        "goes through the plain HTTP downloader, which isn't affected by "
-                        "this block."
+                        "this -- it's a hard-coded policy decision in yt-dlp itself.\n\n"
+                        "If this was a GoFile share link, there's a workaround: open the "
+                        "share page (gofile.io/d/...) in a browser, right-click the video "
+                        "player and choose \"Copy video address\" (or open dev tools' Network "
+                        "tab and find the request for the video file) -- that gives you the "
+                        "real storage URL, which looks like store*.gofile.io/download/web/... "
+                        "or a similar node name. Send that URL to /leech instead of the share "
+                        "page link; it bypasses yt-dlp entirely and goes through the plain "
+                        "HTTP downloader, which isn't affected by this block."
                     ) from e
                 raise
             if info is None:
