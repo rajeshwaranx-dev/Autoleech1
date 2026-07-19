@@ -170,6 +170,7 @@ async def download_with_ytdlp(source: str, out_dir: Path, status) -> Path:
         )
 
     import yt_dlp  # imported lazily so the module import never fails when yt-dlp is absent
+    from yt_dlp.utils import DownloadError  # yt-dlp's own documented pattern for catching this
 
     loop = asyncio.get_running_loop()
     last_edit = {"t": 0.0}
@@ -215,7 +216,29 @@ async def download_with_ytdlp(source: str, out_dir: Path, status) -> Path:
 
     def run_download() -> str:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(source, download=True)
+            try:
+                info = ydl.extract_info(source, download=True)
+            except DownloadError as e:
+                message = str(e)
+                if "no longer supported" in message.lower() and "piracy" in message.lower():
+                    # yt-dlp maintains a deliberate, hard-coded blocklist for sites it has
+                    # judged to be primarily used for piracy -- this is a real policy
+                    # decision (see yt-dlp's own FAQ: "supporting piracy sites would in
+                    # all likelihood result in the project being shut down"), not a bug,
+                    # and there's no extractor-arg or flag to override it. The extractor
+                    # refuses before making any request, so no amount of retrying,
+                    # header changes, or routing logic on this end can work around it.
+                    raise RuntimeError(
+                        "yt-dlp refuses to fetch this site: it's on yt-dlp's own deliberate "
+                        "piracy blocklist, not a bug on this end. There's no override for "
+                        "this -- it's a hard-coded policy decision in yt-dlp itself. If this "
+                        "was a GoFile share link, try the actual file's direct storage URL "
+                        "instead (the store*.gofile.io/download/web/... link, not the "
+                        "gofile.io/d/... share page) -- that bypasses yt-dlp entirely and "
+                        "goes through the plain HTTP downloader, which isn't affected by "
+                        "this block."
+                    ) from e
+                raise
             if info is None:
                 raise RuntimeError("yt-dlp returned no info for this URL.")
             return ydl.prepare_filename(info)
@@ -251,11 +274,39 @@ PARALLEL_WORKERS = min(8, max(1, Config.ARIA2_SPLIT or 4))
 MIN_SIZE_FOR_PARALLEL = 8 * 1024 * 1024
 
 
+def _request_headers(url: str) -> dict:
+    """Headers to send with every direct-HTTP request. aiohttp's default User-Agent
+    (something like 'Python/3.x aiohttp/x.x.x') is a well-known signature some hosts
+    distrust or block outright, separate from any real auth requirement -- a plain
+    browser-shaped UA avoids that class of failure for free. GoFile specifically also
+    gets a Referer: a real, successful GoFile storage-node download logged in
+    aria2/aria2 issue #2326 included one, and GoFile's own download flow (confirmed
+    via multiple independent client implementations) can gate non-cold-storage files
+    on more than just the bare URL. This does NOT reproduce GoFile's X-Website-Token
+    scheme -- that's exactly why GoFile share pages route through yt-dlp's own
+    GofileIE extractor instead of this module; this only helps the already-resolved
+    storage-node URL yt-dlp hands back, for the subset of failures a UA/Referer can
+    actually fix."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    }
+    try:
+        from urllib.parse import urlparse
+        hostname = (urlparse(url).hostname or "").lower()
+    except ValueError:
+        hostname = ""
+    if hostname == "gofile.io" or hostname.endswith(".gofile.io"):
+        headers["Referer"] = "https://gofile.io/"
+    return headers
+
+
 async def probe_url(session: aiohttp.ClientSession, url: str) -> tuple[int, bool, str]:
     """Returns (size, supports_range, filename_hint). Shared by the direct-HTTP
     leech backend and helper.telegram_fetch's link-based Telegram downloader."""
+    headers = _request_headers(url)
     try:
-        async with session.head(url, timeout=aiohttp.ClientTimeout(total=20), allow_redirects=True) as resp:
+        async with session.head(url, headers=headers, timeout=aiohttp.ClientTimeout(total=20), allow_redirects=True) as resp:
             if resp.status == 200:
                 size = int(resp.headers.get("Content-Length", "0") or 0)
                 accepts = resp.headers.get("Accept-Ranges", "").lower() == "bytes"
@@ -263,7 +314,8 @@ async def probe_url(session: aiohttp.ClientSession, url: str) -> tuple[int, bool
     except Exception:
         pass
     try:
-        async with session.get(url, headers={"Range": "bytes=0-0"}, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+        range_headers = {**headers, "Range": "bytes=0-0"}
+        async with session.get(url, headers=range_headers, timeout=aiohttp.ClientTimeout(total=20)) as resp:
             name = _filename_from_headers(resp.headers, url)
             if resp.status == 206:
                 content_range = resp.headers.get("Content-Range", "")
@@ -363,22 +415,34 @@ _MEDIA_LIKE_EXTENSIONS = {
     ".pdf", ".mp3", ".flac", ".iso", ".exe", ".apk",
 }
 _HTML_MARKERS = (b"<!doctype html", b"<html", b"<head>", b"<script")
+# A genuine video/archive/binary file's real header bytes can never start with a
+# literal '{' -- none of the formats in _MEDIA_LIKE_EXTENSIONS begin that way. Some
+# hosts (GoFile's API among them, per real error responses like
+# {"status":"error-notFound",...} seen in third-party GoFile client issue trackers)
+# return a small JSON error object with a misleading 200-ish status instead of the
+# real file. JSON_ERROR_HINT_SIZE_LIMIT keeps this from ever flagging a real file
+# that simply happens to start with '{' by pure coincidence in its first bytes --
+# real media/archive files at this size would never be this small.
+_JSON_ERROR_HINT_SIZE_LIMIT = 4096
 
 
 def _reject_if_html_masquerading_as_media(target: Path) -> None:
-    """Some hosts serve an ad/interstitial/error page with a 200 OK status instead of
-    the real file (raise_for_status() only looks at the HTTP status code, so it can't
-    catch this). If a file with a known media/binary extension actually starts with
-    HTML markers, that's what happened -- raise a clear error instead of silently
-    treating a saved webpage as a successful download.
+    """Some hosts serve an ad/interstitial/error page (HTML) or a small error object
+    (JSON) with a misleading success-shaped response instead of the real file
+    (raise_for_status() only looks at the HTTP status code, so it can't catch this).
+    If a file with a known media/binary extension actually starts with HTML markers,
+    or is implausibly small and JSON-shaped, that's what happened -- raise a clear
+    error instead of silently treating the wrong content as a successful download.
     """
     if target.suffix.lower() not in _MEDIA_LIKE_EXTENSIONS:
         return
     try:
+        size = target.stat().st_size
         with open(target, "rb") as f:
             head = f.read(512).lstrip().lower()
     except OSError:
         return
+
     if any(head.startswith(marker) or marker in head[:200] for marker in _HTML_MARKERS):
         raise RuntimeError(
             f"The server returned a webpage instead of the file for {target.name} "
@@ -386,10 +450,34 @@ def _reject_if_html_masquerading_as_media(target: Path) -> None:
             "link again, or use the site's direct-download option if it has one."
         )
 
+    if head.startswith(b"{") and size <= _JSON_ERROR_HINT_SIZE_LIMIT:
+        try:
+            body_text = target.read_text(errors="ignore").lower()
+        except OSError:
+            body_text = ""
+        if "cold" in body_text and "storage" in body_text:
+            # GoFile-specific, and genuinely unfixable from this end: cold-storage
+            # files require a Premium account to import them back before they
+            # become downloadable at all -- there is no direct link, header, or
+            # retry that gets around this, it's a real platform-level restriction.
+            raise RuntimeError(
+                f"{target.name} is in GoFile cold storage and can't be downloaded directly -- "
+                "GoFile requires importing it into a Premium account first before it becomes "
+                "downloadable at all. This isn't something a direct link or retry can get "
+                "around; it's a real restriction on GoFile's side. Ask whoever shared it to "
+                "re-upload or refresh the link (cold storage happens after a file goes "
+                "unused for a while), or download it manually with a GoFile Premium account."
+            )
+        raise RuntimeError(
+            f"The server returned an error response instead of the file for {target.name} "
+            "(got a small JSON error object where the real file was expected). Try the link "
+            "again, or check whether the source requires an account/premium access."
+        )
+
 
 async def sequential_download(session: aiohttp.ClientSession, url: str, target: Path, on_progress) -> None:
     downloaded = 0
-    async with session.get(url, timeout=aiohttp.ClientTimeout(total=None)) as resp:
+    async with session.get(url, headers=_request_headers(url), timeout=aiohttp.ClientTimeout(total=None)) as resp:
         resp.raise_for_status()
         total = int(resp.headers.get("Content-Length", "0") or 0)
         with open(target, "wb") as f:
@@ -417,7 +505,7 @@ async def parallel_range_download(session: aiohttp.ClientSession, url: str, targ
 
     async def worker(byte_start: int, byte_end: int):
         nonlocal downloaded_total
-        headers = {"Range": f"bytes={byte_start}-{byte_end}"}
+        headers = {**_request_headers(url), "Range": f"bytes={byte_start}-{byte_end}"}
         async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=None)) as resp:
             resp.raise_for_status()
             offset = byte_start
