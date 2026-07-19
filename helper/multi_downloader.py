@@ -378,7 +378,15 @@ def _synthesize_filename(content_type: str) -> str:
 async def download_direct_http_fast(source: str, out_dir: Path, status) -> Path:
     """Faster direct-HTTP downloader: parallel byte-range workers when the server
     supports it, sequential streaming otherwise. Drop-in replacement for the old
-    single-stream `download_direct_http`."""
+    single-stream `download_direct_http`.
+
+    If the parallel path produces a file that fails the media-integrity check (looks
+    like an HTML/JSON error page rather than the real file), automatically retries
+    once with the sequential path before giving up -- some hosts' anti-bot defenses
+    appear to react differently to a burst of simultaneous parallel range requests
+    than to a single ordinary connection, which is architecturally much closer to
+    what parallel downloading isn't and sequential downloading is.
+    """
     async with aiohttp.ClientSession() as session:
         size, supports_range, filename = await probe_url(session, source)
         filename = filename or "download.bin"
@@ -386,29 +394,46 @@ async def download_direct_http_fast(source: str, out_dir: Path, status) -> Path:
 
         last_edit = {"t": 0.0}
         start = time.time()
+        used_parallel = supports_range and size >= MIN_SIZE_FOR_PARALLEL
 
-        async def on_progress(current: int, total: int):
+        async def on_progress(current: int, total: int, label: str = ""):
             now = time.time()
             if now - last_edit["t"] < 3 and current < total:
                 return
             last_edit["t"] = now
             speed = current / max(now - start, 0.001)
             total_text = humanbytes(total) if total else "unknown"
+            mode = label or (f"parallel x{PARALLEL_WORKERS}" if used_parallel else "single connection")
             await _safe_edit(
                 status,
-                f"🌐 **HTTP downloading (parallel x{PARALLEL_WORKERS})...**\n"
-                f"{humanbytes(current)} / {total_text}\n⚡ {humanbytes(speed)}/s"
-                if supports_range and size >= MIN_SIZE_FOR_PARALLEL else
-                f"🌐 **HTTP downloading...**\n{humanbytes(current)} / {total_text}\n⚡ {humanbytes(speed)}/s",
+                f"🌐 **HTTP downloading ({mode})...**\n{humanbytes(current)} / {total_text}\n⚡ {humanbytes(speed)}/s",
             )
 
-        if supports_range and size >= MIN_SIZE_FOR_PARALLEL:
+        if used_parallel:
             await parallel_range_download(session, source, target, size, on_progress)
         else:
             await sequential_download(session, source, target, on_progress)
 
+        if used_parallel and target.exists() and target.stat().st_size > 0:
+            integrity_error = _check_media_integrity(target)
+            if integrity_error is not None:
+                # The parallel path produced something that isn't the real file.
+                # Discard it and retry once with a single ordinary connection before
+                # giving up -- see the docstring above for why this specifically
+                # (not just "retry the same thing again") is the sensible fallback.
+                target.unlink(missing_ok=True)
+                await _safe_edit(status, "⚠️ **Parallel download looked wrong, retrying with a single connection...**")
+                start = time.time()
+                last_edit["t"] = 0.0
+                await sequential_download(
+                    session, source, target,
+                    lambda current, total: on_progress(current, total, label="single connection, retry"),
+                )
+
     if target.exists() and target.stat().st_size > 0:
-        _reject_if_html_masquerading_as_media(target)
+        error = _check_media_integrity(target)
+        if error is not None:
+            raise RuntimeError(error)
         return target
     raise RuntimeError("HTTP download finished but no file was saved.")
 
@@ -429,25 +454,25 @@ _HTML_MARKERS = (b"<!doctype html", b"<html", b"<head>", b"<script")
 _JSON_ERROR_HINT_SIZE_LIMIT = 4096
 
 
-def _reject_if_html_masquerading_as_media(target: Path) -> None:
+def _check_media_integrity(target: Path) -> str | None:
     """Some hosts serve an ad/interstitial/error page (HTML) or a small error object
     (JSON) with a misleading success-shaped response instead of the real file
     (raise_for_status() only looks at the HTTP status code, so it can't catch this).
-    If a file with a known media/binary extension actually starts with HTML markers,
-    or is implausibly small and JSON-shaped, that's what happened -- raise a clear
-    error instead of silently treating the wrong content as a successful download.
+    Returns an error message describing what went wrong, or None if the file looks
+    like a genuine media/binary file. Doesn't raise directly so callers can decide
+    whether to retry with a different download strategy before giving up.
     """
     if target.suffix.lower() not in _MEDIA_LIKE_EXTENSIONS:
-        return
+        return None
     try:
         size = target.stat().st_size
         with open(target, "rb") as f:
             head = f.read(512).lstrip().lower()
     except OSError:
-        return
+        return None
 
     if any(head.startswith(marker) or marker in head[:200] for marker in _HTML_MARKERS):
-        raise RuntimeError(
+        return (
             f"The server returned a webpage instead of the file for {target.name} "
             "(some hosts show an interstitial/ad page on the first request). Try the "
             "link again, or use the site's direct-download option if it has one."
@@ -463,7 +488,7 @@ def _reject_if_html_masquerading_as_media(target: Path) -> None:
             # files require a Premium account to import them back before they
             # become downloadable at all -- there is no direct link, header, or
             # retry that gets around this, it's a real platform-level restriction.
-            raise RuntimeError(
+            return (
                 f"{target.name} is in GoFile cold storage and can't be downloaded directly -- "
                 "GoFile requires importing it into a Premium account first before it becomes "
                 "downloadable at all. This isn't something a direct link or retry can get "
@@ -471,11 +496,20 @@ def _reject_if_html_masquerading_as_media(target: Path) -> None:
                 "re-upload or refresh the link (cold storage happens after a file goes "
                 "unused for a while), or download it manually with a GoFile Premium account."
             )
-        raise RuntimeError(
+        return (
             f"The server returned an error response instead of the file for {target.name} "
             "(got a small JSON error object where the real file was expected). Try the link "
             "again, or check whether the source requires an account/premium access."
         )
+    return None
+
+
+def _reject_if_html_masquerading_as_media(target: Path) -> None:
+    """Raising wrapper around _check_media_integrity, kept for any caller that wants
+    the old raise-immediately-on-failure behavior."""
+    error = _check_media_integrity(target)
+    if error is not None:
+        raise RuntimeError(error)
 
 
 async def sequential_download(session: aiohttp.ClientSession, url: str, target: Path, on_progress) -> None:
