@@ -15,8 +15,10 @@ from helper.media_tools import add_video_branding, is_video_file, make_cover_ima
 from helper.multi_downloader import (
     download_direct_http_fast,
     download_with_ytdlp,
+    extract_gofile_source_url,
     is_ytdlp_available,
     looks_like_ytdlp_source,
+    resolve_gofile_page_source_url,
     rewrite_to_direct_url,
 )
 from helper.stream_links import build_stream_url, register_stream
@@ -131,15 +133,40 @@ def extract_leech_sources(text: str | None) -> list[str]:
     """Return magnet links and URLs that look like torrent/direct leech sources.
 
     Torrent URLs are accepted when the URL contains the word "torrent" anywhere,
-    not only when it ends with .torrent.
+    not only when it ends with .torrent. If a channel post includes rendered GoFile
+    player HTML, also pull the direct storage URL from the <source src="..."> tag so
+    domain changes are followed from the page/snippet instead of guessed.
     """
     if not text:
         return []
     sources = MAGNET_RE.findall(text)
+    source_tag_url = extract_gofile_source_url(text)
+    if source_tag_url:
+        sources.append(source_tag_url)
     for url in URL_RE.findall(text):
-        clean = url.rstrip(").,]}")
+        clean = url.rstrip(").,]}>'\"")
         if clean not in sources and ("torrent" in clean.lower() or clean.startswith(("http://", "https://"))):
             sources.append(clean)
+    return sources
+
+
+def extract_message_leech_sources(message: Message) -> list[str]:
+    """Extract visible URLs plus Telegram hidden hyperlink entity URLs from a message."""
+    sources = extract_leech_sources(message.text or message.caption)
+    text = message.text or message.caption or ""
+    entities = list(message.entities or []) + list(message.caption_entities or [])
+    for entity in entities:
+        url = getattr(entity, "url", None)
+        if not url and str(getattr(entity, "type", "")).lower().endswith("url"):
+            try:
+                url = text[entity.offset:entity.offset + entity.length]
+            except Exception:
+                url = None
+        if not url:
+            continue
+        for source in extract_leech_sources(url):
+            if source not in sources:
+                sources.append(source)
     return sources
 
 
@@ -290,6 +317,10 @@ async def route_download(source: str, out_dir: Path, status: Message) -> Path:
     direct_url = rewrite_to_direct_url(source)
     if direct_url:
         return await download_direct_http_fast(direct_url, out_dir, status)
+
+    gofile_source_url = await resolve_gofile_page_source_url(source, status)
+    if gofile_source_url:
+        return await download_direct_http_fast(gofile_source_url, out_dir, status)
 
     if looks_like_ytdlp_source(source):
         if is_ytdlp_available():
@@ -504,7 +535,7 @@ async def leech_cmd(client: Client, message: Message):
         return await message.reply_text("Only admins can use leech commands.")
     source = " ".join(message.command[1:]).strip()
     if not source and message.reply_to_message:
-        sources = extract_leech_sources(message.reply_to_message.text or message.reply_to_message.caption)
+        sources = extract_message_leech_sources(message.reply_to_message)
         if sources:
             source = sources[0]
         elif message.reply_to_message.document:
@@ -558,7 +589,7 @@ async def leech_cmd(client: Client, message: Message):
 async def auto_queue_leech_sources(client: Client, message: Message):
     if str(message.chat.id) not in SOURCE_CHANNELS:
         return
-    sources = extract_leech_sources(message.text or message.caption)
+    sources = extract_message_leech_sources(message)
     if not sources and message.document and "torrent" in get_media_name(message).lower():
         # Same direct fetch as above, applied to auto-queued channel .torrent files.
         workdir = LEECH_ROOT / f"channel_{message.chat.id}_{message.id}"
