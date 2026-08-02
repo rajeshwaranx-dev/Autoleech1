@@ -63,8 +63,3 @@ async def take_screen_shot(video_file, output_directory, ttl):
     
     
     
-
-# Jishu Developer 
-# Don't Remove Credit 🥺
-# Telegram Channel @JishuBotz & @Madflix_Bots
-# Developer @JishuDeveloper

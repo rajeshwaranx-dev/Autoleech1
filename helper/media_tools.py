@@ -13,11 +13,41 @@ def is_video_file(path: str) -> bool:
     return Path(path).suffix.lower() in {".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v"}
 
 
+import os
+
+# heroku-buildpack-apt installs packages under /app/.apt and is supposed to set
+# LD_LIBRARY_PATH accordingly via its own .profile.d script -- but this is a
+# documented, still-open gap in that buildpack (heroku/heroku-buildpack-apt issues
+# #27 and #39): some packages install into subdirectories the buildpack's automatic
+# path detection misses, leaving their shared libraries genuinely installed but not
+# findable at runtime (e.g. "ffmpeg: error while loading shared libraries:
+# libpulsecommon-16.1.so: cannot open shared object file"). Rather than depend
+# entirely on that detection succeeding, build it into every subprocess this bot
+# spawns directly. Paths that don't exist (Docker, or any non-Heroku environment)
+# are silently skipped by the dynamic linker, so this is a no-op harmless default
+# everywhere else.
+_APT_LIB_PATHS = [
+    "/app/.apt/usr/lib/x86_64-linux-gnu",
+    "/app/.apt/usr/lib/i386-linux-gnu",
+    "/app/.apt/usr/lib",
+]
+
+
+def _subprocess_env() -> dict:
+    env = dict(os.environ)
+    existing = env.get("LD_LIBRARY_PATH", "")
+    extra = ":".join(p for p in _APT_LIB_PATHS if p not in existing)
+    if extra:
+        env["LD_LIBRARY_PATH"] = f"{extra}:{existing}" if existing else extra
+    return env
+
+
 async def run_cmd(*cmd: str) -> tuple[int, str, str]:
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env=_subprocess_env(),
     )
     out, err = await proc.communicate()
     return proc.returncode, out.decode(errors="ignore"), err.decode(errors="ignore")

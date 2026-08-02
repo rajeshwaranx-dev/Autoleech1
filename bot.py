@@ -1,11 +1,11 @@
 import asyncio
-
 import aiohttp
 from pyrogram import Client
 from pyrogram.types import BotCommand
 from aiohttp import web
 from config import Config
 from plugins.file_rename import start_worker
+from plugins.leech import start_leech_workers
 from helper.stream_links import stream_handler
 from pyrogram import utils as pyroutils
 
@@ -110,6 +110,7 @@ class Bot(Client):
 
         # Start background workers only after the health server is bound, so Heroku can mark the dyno healthy quickly.
         start_worker(self)
+        start_leech_workers()
 
         # Keep Heroku web dynos warm by pinging the public health endpoint.
         self.keep_alive_task = asyncio.create_task(self.keep_alive_loop())

@@ -521,6 +521,12 @@ async def list_remname_tokens(client: Client, message: Message):
 async def queue_and_speed_stats(client: Client, message: Message):
     if not is_admin_user(message):
         return await message.reply_text("Only admins can use this command.")
+    # Lazy import: plugins.leech already imports from this module at module level,
+    # so importing leech.py's queue state back at THIS module's top level would be a
+    # circular import that fails to load at all. Importing here, inside the function
+    # body, works fine since by call time both modules have already finished loading.
+    from plugins.leech import leech_jobs, leech_queue, LEECH_WORKER_COUNT
+
     source_counts = get_queue_source_counts()
     source_lines = "\n".join(
         [f"• `{get_channel_name(chat_id)}` (`{chat_id}`): {count}" for chat_id, count in source_counts.items()]
@@ -535,11 +541,16 @@ async def queue_and_speed_stats(client: Client, message: Message):
     )
     stats_text = (
         f"📊 **MNTGX Queue Stats**\n\n"
+        f"**Telegram Channel Queue**\n"
         f"⚙️ Max Concurrent: `{MAX_CONCURRENT_DOWNLOADS}`\n"
         f"🧾 Queue Total: `{len(channel_jobs)}`\n"
         f"🔄 Active Now: `{await get_active_download_count()}`\n"
         f"⏱️ Approx queue completion: `{eta_text}`\n"
         f"🎯 Target Chats: `{', '.join(DESTINATION_CHANNELS)}`\n\n"
+        f"**Leech Queue** (torrents, direct links, GoFile, Pixeldrain, yt-dlp sites)\n"
+        f"⚙️ Max Concurrent: `{LEECH_WORKER_COUNT}`\n"
+        f"🧾 Queue Total: `{len(leech_jobs)}`\n"
+        f"⏳ Waiting: `{leech_queue.qsize()}`\n\n"
         f"**Sources & Queue Count**\n{source_lines}\n\n"
         f"✅ Uploaded Files: `{transfer_stats['upload_files']}`\n"
         f"📥 Downloaded Files: `{transfer_stats['download_files']}`"
@@ -569,9 +580,87 @@ async def mntgx_help(client: Client, message: Message):
         "• `/addsource <chat_id>` `/removesource <chat_id>` `/listsources`\n"
         "• `/addtarget <chat_id>` `/removetarget <chat_id>` `/listtargets`\n"
         "• `/requeue` - re-import jobs from DB\n"
+        "• `/watermarktest` - verify watermark branding actually works on this deployment\n"
         "• `/ping` - quick bot health check\n"
     )
     await message.reply_text(text)
+
+
+@Client.on_message(filters.private & filters.command("watermarktest"))
+async def watermark_test_cmd(client: Client, message: Message):
+    """Runs the real branding pipeline against a tiny synthetic clip and reports back
+    definitively whether the watermark was actually applied on this deployment --
+    removes any ambiguity between "ENABLE_MEDIA_BRANDING is off" and "something is
+    genuinely broken" without needing to leech a real file to find out.
+    """
+    if not is_admin_user(message):
+        return await message.reply_text("Only admins can use this command.")
+
+    if not Config.ENABLE_MEDIA_BRANDING:
+        return await message.reply_text(
+            "⚠️ **ENABLE_MEDIA_BRANDING is OFF.**\n\n"
+            "This is why videos upload without a watermark -- it's not a bug, the "
+            "feature is just disabled. Set `ENABLE_MEDIA_BRANDING=1` on your dyno "
+            "and restart, then run `/watermarktest` again to confirm it actually renders."
+        )
+
+    status = await message.reply_text("🧪 Generating a test clip and running the real branding pipeline...")
+    test_dir = os.path.join("downloads", "watermark_test")
+    os.makedirs(test_dir, exist_ok=True)
+    src_path = os.path.join(test_dir, "src.mp4")
+    out_path = os.path.join(test_dir, "branded.mp4")
+    for p in (src_path, out_path):
+        if os.path.exists(p):
+            os.remove(p)
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=0x336699:s=480x270:d=3",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "ultrafast", src_path,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        _, err = await proc.communicate()
+        if proc.returncode != 0 or not os.path.exists(src_path):
+            return await status.edit(f"❌ Couldn't even generate a test clip -- ffmpeg itself may be missing:\n`{err.decode(errors='ignore')[-400:]}`")
+
+        result_path = await add_video_branding(src_path, out_path, Config.WATERMARK_TEXT, Config.METADATA_TEXT)
+
+        # Extract a frame and compare basic file size against the unbranded source as
+        # a quick sanity signal, then send the actual frame so the admin can see for
+        # themselves rather than just trust a boolean.
+        frame_path = os.path.join(test_dir, "frame.png")
+        if os.path.exists(frame_path):
+            os.remove(frame_path)
+        proc2 = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-y", "-ss", "1", "-i", result_path, "-frames:v", "1", frame_path,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        await proc2.communicate()
+
+        if result_path == src_path:
+            await status.edit(
+                "❌ **Branding fell back to the unmodified source.** add_video_branding "
+                "couldn't run drawtext (check server logs for the ffmpeg error). This "
+                "points to something environment-specific -- e.g. the DejaVu font "
+                "package missing -- rather than ENABLE_MEDIA_BRANDING."
+            )
+        elif os.path.exists(frame_path):
+            await message.reply_photo(
+                frame_path,
+                caption="✅ **Watermark pipeline works.** This frame was extracted from a "
+                        "test clip run through your real add_video_branding function. If "
+                        "your actual leeched videos still have no watermark, the difference "
+                        "is somewhere else -- e.g. the file isn't being detected as a video "
+                        "(check its extension) rather than the branding step itself.",
+            )
+            await status.delete()
+        else:
+            await status.edit("✅ Branding ran without error, but the verification frame extraction failed -- check server logs.")
+    except Exception as e:
+        await status.edit(f"❌ Test failed with an exception: `{str(e)[:500]}`")
+    finally:
+        import shutil as _shutil
+        _shutil.rmtree(test_dir, ignore_errors=True)
 
 
 @Client.on_message(filters.private & filters.command(["admin", "panel"]))
