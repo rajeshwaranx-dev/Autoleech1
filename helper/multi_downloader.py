@@ -28,6 +28,7 @@ import re
 import time
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 import aiohttp
 
@@ -58,6 +59,54 @@ YTDLP_LIKELY_HOSTS = (
     # token generation by hand.
     "gofile.io",
 )
+
+
+_GOFILE_SHARE_HOSTS = {"gofile.io", "www.gofile.io"}
+_SOURCE_SRC_RE = re.compile(
+    r"<source\b[^>]*\bsrc\s*=\s*([\"\'])(?P<url>https?://[^\"\']+)\1",
+    re.IGNORECASE,
+)
+_VIDEO_SRC_RE = re.compile(
+    r"<video\b[^>]*\bsrc\s*=\s*([\"\'])(?P<url>https?://[^\"\']+)\1",
+    re.IGNORECASE,
+)
+
+
+def is_gofile_share_url(url: str) -> bool:
+    """True for GoFile browser/share pages such as https://gofile.io/d/{id}."""
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    hostname = (parsed.hostname or "").lower()
+    parts = [part for part in parsed.path.split("/") if part]
+    return hostname in _GOFILE_SHARE_HOSTS and len(parts) >= 2 and parts[0].lower() == "d"
+
+
+def extract_gofile_source_url(html: str) -> str | None:
+    """Extract the resolved GoFile storage URL from a rendered/share-page HTML snippet.
+
+    GoFile's storage node changes by file/location, so never guess a hostname. Prefer
+    the <source src=...> inside the video player (the browser's direct download URL),
+    with a <video src=...> fallback for pages/snippets using that shape.
+    """
+    for pattern in (_SOURCE_SRC_RE, _VIDEO_SRC_RE):
+        match = pattern.search(html or "")
+        if match:
+            return match.group("url").replace("&amp;", "&")
+    return None
+
+
+async def resolve_gofile_page_source_url(url: str, status=None) -> str | None:
+    """Fetch a GoFile share page and return the direct <source src> URL when present."""
+    if not is_gofile_share_url(url):
+        return None
+    await _safe_edit(status, "🔎 **Checking GoFile page for direct video source...**")
+    async with aiohttp.ClientSession(headers=_request_headers(url)) as session:
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=30), allow_redirects=True) as resp:
+            resp.raise_for_status()
+            html = await resp.text(errors="ignore")
+    return extract_gofile_source_url(html)
 
 
 def is_ytdlp_available() -> bool:
