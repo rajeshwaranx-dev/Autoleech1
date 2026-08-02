@@ -52,12 +52,6 @@ YTDLP_LIKELY_HOSTS = (
     "soundcloud.com", "vimeo.com", "dailymotion.com", "twitch.tv",
     "streamable.com", "pinterest.com", "likee.video", "bilibili.com",
     "rumble.com", "ok.ru", "vk.com", "linkedin.com",
-    # gofile.io requires a dynamic, frequently-rotating website-token scheme to call
-    # its API directly (see helper.multi_downloader module docstring). yt-dlp ships
-    # its own actively-maintained GofileIE extractor that already handles this, so
-    # routing here through yt-dlp is far more robust than reimplementing GoFile's
-    # token generation by hand.
-    "gofile.io",
 )
 
 
@@ -70,6 +64,13 @@ _VIDEO_SRC_RE = re.compile(
     r"<video\b[^>]*\bsrc\s*=\s*([\"\'])(?P<url>https?://[^\"\']+)\1",
     re.IGNORECASE,
 )
+_GOFILE_WT_RE = re.compile(r"(?:appdata\.wt|wt)\s*[:=]\s*['\"](?P<wt>[a-zA-Z0-9_-]+)['\"]")
+_EXTRA_REQUEST_HEADERS: dict[str, dict[str, str]] = {}
+
+
+def register_extra_request_headers(url: str, headers: dict[str, str]) -> None:
+    if headers:
+        _EXTRA_REQUEST_HEADERS[url] = headers
 
 
 def is_gofile_share_url(url: str) -> bool:
@@ -97,16 +98,105 @@ def extract_gofile_source_url(html: str) -> str | None:
     return None
 
 
-async def resolve_gofile_page_source_url(url: str, status=None) -> str | None:
-    """Fetch a GoFile share page and return the direct <source src> URL when present."""
+def _gofile_content_id(url: str) -> str | None:
     if not is_gofile_share_url(url):
         return None
-    await _safe_edit(status, "🔎 **Checking GoFile page for direct video source...**")
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return None
+    parts = [part for part in parsed.path.split("/") if part]
+    return parts[1] if len(parts) >= 2 else None
+
+
+def _find_gofile_download_url(node) -> str | None:
+    """Return the first file download link found in a GoFile API response tree."""
+    if isinstance(node, dict):
+        link = node.get("link") or node.get("directLink") or node.get("downloadPage")
+        if isinstance(link, str) and link.startswith(("http://", "https://")) and "/download/" in link:
+            return link
+        children = node.get("children")
+        if isinstance(children, dict):
+            iterable = children.values()
+        elif isinstance(children, list):
+            iterable = children
+        else:
+            iterable = []
+        for child in iterable:
+            found = _find_gofile_download_url(child)
+            if found:
+                return found
+    elif isinstance(node, list):
+        for child in node:
+            found = _find_gofile_download_url(child)
+            if found:
+                return found
+    return None
+
+
+async def _fetch_gofile_website_token(session: aiohttp.ClientSession) -> str | None:
+    for path in ("/dist/js/global.js", "/dist/js/alljs.js"):
+        try:
+            async with session.get(f"https://gofile.io{path}", timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                if resp.status != 200:
+                    continue
+                match = _GOFILE_WT_RE.search(await resp.text(errors="ignore"))
+                if match:
+                    return match.group("wt")
+        except Exception:
+            continue
+    return None
+
+
+async def _resolve_gofile_api_url(session: aiohttp.ClientSession, url: str) -> str | None:
+    content_id = _gofile_content_id(url)
+    if not content_id:
+        return None
+
+    async with session.post("https://api.gofile.io/accounts", timeout=aiohttp.ClientTimeout(total=20)) as resp:
+        resp.raise_for_status()
+        account = await resp.json(content_type=None)
+    token = ((account.get("data") or {}).get("token") or "").strip()
+    if not token:
+        return None
+
+    wt = await _fetch_gofile_website_token(session)
+    params = {"cache": "true"}
+    if wt:
+        params["wt"] = wt
+    headers = {"Authorization": f"Bearer {token}"}
+    async with session.get(
+        f"https://api.gofile.io/contents/{content_id}",
+        params=params,
+        headers=headers,
+        timeout=aiohttp.ClientTimeout(total=30),
+    ) as resp:
+        resp.raise_for_status()
+        payload = await resp.json(content_type=None)
+    if payload.get("status") != "ok":
+        return None
+    direct_url = _find_gofile_download_url(payload.get("data"))
+    if direct_url:
+        register_extra_request_headers(direct_url, {**headers, "Cookie": f"accountToken={token}"})
+    return direct_url
+
+
+async def resolve_gofile_page_source_url(url: str, status=None) -> str | None:
+    """Resolve a GoFile share page without yt-dlp, returning a direct storage URL."""
+    if not is_gofile_share_url(url):
+        return None
+    await _safe_edit(status, "🔎 **Resolving GoFile link without yt-dlp...**")
     async with aiohttp.ClientSession(headers=_request_headers(url)) as session:
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=30), allow_redirects=True) as resp:
-            resp.raise_for_status()
-            html = await resp.text(errors="ignore")
-    return extract_gofile_source_url(html)
+        try:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=30), allow_redirects=True) as resp:
+                resp.raise_for_status()
+                html = await resp.text(errors="ignore")
+            source_url = extract_gofile_source_url(html)
+            if source_url:
+                return source_url
+        except Exception:
+            pass
+        return await _resolve_gofile_api_url(session, url)
 
 
 def is_ytdlp_available() -> bool:
@@ -350,6 +440,7 @@ def _request_headers(url: str) -> dict:
         hostname = ""
     if hostname == "gofile.io" or hostname.endswith(".gofile.io"):
         headers["Referer"] = "https://gofile.io/"
+    headers.update(_EXTRA_REQUEST_HEADERS.get(url, {}))
     return headers
 
 

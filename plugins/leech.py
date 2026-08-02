@@ -307,9 +307,10 @@ async def route_download(source: str, out_dir: Path, status: Message) -> Path:
     1. Magnet / .torrent / torrent-flavoured URL -> aria2c (BitTorrent only, no substitute).
     2. Share link from a host with a confirmed direct-download API behind it (currently
        Pixeldrain) -> rewritten to the real endpoint, then handled as a direct link.
-    3. Known media/social site (YouTube, X/Twitter, Instagram, TikTok, Reddit, GoFile, ...)
+    3. GoFile share page -> resolve without yt-dlp, then direct HTTP download.
+    4. Known media/social site (YouTube, X/Twitter, Instagram, TikTok, Reddit, ...)
        -> yt-dlp, which understands page/API extraction instead of just fetching bytes.
-    4. Anything else that looks like a plain file URL -> the fast parallel-range HTTP downloader.
+    5. Anything else that looks like a plain file URL -> the fast parallel-range HTTP downloader.
     """
     if _is_torrentish(source):
         return await download_with_aria2(source, out_dir, status)
@@ -321,6 +322,11 @@ async def route_download(source: str, out_dir: Path, status: Message) -> Path:
     gofile_source_url = await resolve_gofile_page_source_url(source, status)
     if gofile_source_url:
         return await download_direct_http_fast(gofile_source_url, out_dir, status)
+    if "gofile.io" in source.lower():
+        raise RuntimeError(
+            "Could not resolve this GoFile link without yt-dlp. If it is a video page, open it in "
+            "Chrome and send the direct video address from the player/source tag instead."
+        )
 
     if looks_like_ytdlp_source(source):
         if is_ytdlp_available():
