@@ -58,6 +58,7 @@ A Pyrogram-based Telegram downloader/leech bot optimized for Heroku/Docker. It m
 | `MIN_TRANSFER_SPEED_MBPS` | No | `4` | Progress warning threshold. |
 | `MAX_UPLOAD_SIZE_GB` | No | `2` | Maximum file size accepted by the bot. Set `4` only when `PREMIUM_SESSION_STRING` is a Telegram Premium user session and that user is admin/member in target channels. |
 | `PREMIUM_SESSION_STRING` | No | empty | Pyrogram user session string used as a separate uploader for 2GB+ documents. Without it, uploads use the bot client and Telegram bot limits still apply. |
+| `GOFILE_API_TOKEN` | Recommended for GoFile | empty | GoFile account API token used to resolve `gofile.io/d/...` share links without yt-dlp. Direct storage URLs from `<source src>` still work without it. |
 | `ENABLE_MEDIA_BRANDING` | No | `0` | Enable ffmpeg watermark/metadata. Disabled by default to avoid Heroku memory kills; turn on for bigger dynos. |
 | `WATERMARK_TEXT` | No | `@MNTGX` | Center watermark text. |
 | `METADATA_TEXT` | No | `Join @MNTGX in Telegram` | Metadata and cover brand text. |
@@ -78,7 +79,7 @@ Torrent and magnet support requires `aria2c` on the runtime image. The included 
 
 ## Multi-Site Leeching (yt-dlp)
 
-`/leech` recognizes links from YouTube, Twitter/X, Instagram, TikTok, Reddit, Facebook, SoundCloud, Vimeo, Dailymotion, Twitch, and many other sites and routes them through `yt-dlp`, which is already listed in `requirements.txt`. If `yt-dlp` isn't installed on your deployment, those links fail with a clear message telling you to add it and redeploy; plain direct-file URLs and torrents/magnets are unaffected either way.
+`/leech` recognizes links from YouTube, Twitter/X, Instagram, TikTok, Reddit, Facebook, SoundCloud, Vimeo, Dailymotion, Twitch, and many other sites and routes them through `yt-dlp`, which is already listed in `requirements.txt`. GoFile links are resolved by the bot without yt-dlp; set `GOFILE_API_TOKEN` for reliable `gofile.io/d/...` share-page resolution. If `yt-dlp` isn't installed on your deployment, those links fail with a clear message telling you to add it and redeploy; plain direct-file URLs and torrents/magnets are unaffected either way.
 
 ## Faster Leeching
 
