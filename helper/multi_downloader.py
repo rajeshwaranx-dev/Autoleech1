@@ -25,6 +25,7 @@ import asyncio
 import importlib.util
 import os
 import re
+import shutil
 import time
 from pathlib import Path
 from typing import Optional
@@ -340,6 +341,108 @@ def rewrite_to_direct_url(url: str) -> Optional[str]:
 
     return None
 
+
+
+def _latest_downloaded_file(folder: Path, since: float = 0) -> Path | None:
+    candidates = [
+        p for p in folder.rglob("*")
+        if p.is_file() and not p.name.endswith((".aria2", ".part")) and p.stat().st_mtime >= since
+    ]
+    return max(candidates, key=lambda p: p.stat().st_size, default=None)
+
+
+async def download_with_gofile_dl(source: str, out_dir: Path, status) -> Path:
+    """Download a GoFile share link with the optional `gofile-dl` CLI package."""
+    exe = shutil.which("gofile-dl")
+    if not exe:
+        raise RuntimeError("gofile-dl is not installed on this deployment.")
+    await _safe_edit(status, "☁️ **Downloading GoFile link with gofile-dl...**")
+    cmd = [exe, "--output-dir", str(out_dir)]
+    if Config.GOFILE_API_TOKEN:
+        cmd.extend(["--token", Config.GOFILE_API_TOKEN])
+    cmd.append(source)
+    started = time.time()
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
+    )
+    tail = ""
+    last_edit = 0.0
+    while True:
+        line = await proc.stdout.readline()
+        if not line:
+            break
+        decoded = line.decode(errors="ignore")
+        tail = (tail + decoded)[-1600:]
+        if time.time() - last_edit > 5:
+            last_edit = time.time()
+            await _safe_edit(status, f"☁️ **gofile-dl running...**\n```{tail[-700:]}```")
+    code = await proc.wait()
+    if code != 0:
+        raise RuntimeError(f"gofile-dl failed with exit code {code}: {tail[-700:]}")
+    downloaded = _latest_downloaded_file(out_dir, started)
+    if not downloaded:
+        raise RuntimeError("gofile-dl finished but no downloaded file was found.")
+    return downloaded
+
+
+def _call_first_existing(obj, names: tuple[str, ...], *args, **kwargs):
+    for name in names:
+        method = getattr(obj, name, None)
+        if callable(method):
+            return method(*args, **kwargs)
+    return None
+
+
+async def resolve_with_gofile_api_library(source: str) -> str | None:
+    """Resolve a GoFile share link with the optional `gofile-api` package when present.
+
+    The PyPI package is older than GoFile's current API, so this backend is best-effort
+    and only used as a bridge to produce a direct URL for our hardened HTTP downloader.
+    """
+    if importlib.util.find_spec("gofile_api") is None:
+        return None
+    module = importlib.import_module("gofile_api")
+    content_id = _gofile_content_id(source)
+    if not content_id:
+        return None
+    session_cls = getattr(module, "GoFileSession", None) or getattr(module, "GofileSession", None)
+    if session_cls is None:
+        return None
+
+    def run_library() -> str | None:
+        candidates = []
+        if Config.GOFILE_API_TOKEN:
+            candidates.extend(({"token": Config.GOFILE_API_TOKEN}, {"api_token": Config.GOFILE_API_TOKEN}))
+        candidates.append({})
+        last_error = None
+        for kwargs in candidates:
+            try:
+                client = session_cls(**kwargs)
+                data = _call_first_existing(
+                    client,
+                    ("get_contents", "get_content", "get_content_info", "get_folder_contents"),
+                    content_id,
+                )
+                found = _find_gofile_download_url(data)
+                if found:
+                    return found
+            except Exception as e:
+                last_error = e
+        if last_error:
+            raise RuntimeError(f"gofile-api could not resolve this link: {last_error}") from last_error
+        return None
+
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, run_library)
+
+
+async def download_with_gofile_api_library(source: str, out_dir: Path, status) -> Path:
+    """Resolve with optional `gofile-api`, then download using the direct HTTP backend."""
+    await _safe_edit(status, "☁️ **Resolving GoFile link with gofile-api...**")
+    direct_url = await resolve_with_gofile_api_library(source)
+    if not direct_url:
+        raise RuntimeError("gofile-api is not installed or did not return a direct download URL.")
+    return await download_direct_http_fast(direct_url, out_dir, status)
 
 YTDLP_MAX_HEIGHT = max(240, int(os.environ.get("YTDLP_MAX_HEIGHT", "1080")))
 

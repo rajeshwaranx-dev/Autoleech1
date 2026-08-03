@@ -14,8 +14,11 @@ from helper.zip_extractor import extract_zip, is_zip_file
 from helper.media_tools import add_video_branding, is_video_file, make_cover_image
 from helper.multi_downloader import (
     download_direct_http_fast,
+    download_with_gofile_api_library,
+    download_with_gofile_dl,
     download_with_ytdlp,
     extract_gofile_source_url,
+    is_gofile_share_url,
     is_ytdlp_available,
     looks_like_ytdlp_source,
     resolve_gofile_page_source_url,
@@ -307,7 +310,7 @@ async def route_download(source: str, out_dir: Path, status: Message) -> Path:
     1. Magnet / .torrent / torrent-flavoured URL -> aria2c (BitTorrent only, no substitute).
     2. Share link from a host with a confirmed direct-download API behind it (currently
        Pixeldrain) -> rewritten to the real endpoint, then handled as a direct link.
-    3. GoFile share page -> resolve without yt-dlp, then direct HTTP download.
+    3. GoFile share page -> try gofile-dl, gofile-api, then native resolver without yt-dlp.
     4. Known media/social site (YouTube, X/Twitter, Instagram, TikTok, Reddit, ...)
        -> yt-dlp, which understands page/API extraction instead of just fetching bytes.
     5. Anything else that looks like a plain file URL -> the fast parallel-range HTTP downloader.
@@ -319,13 +322,25 @@ async def route_download(source: str, out_dir: Path, status: Message) -> Path:
     if direct_url:
         return await download_direct_http_fast(direct_url, out_dir, status)
 
-    gofile_source_url = await resolve_gofile_page_source_url(source, status)
-    if gofile_source_url:
-        return await download_direct_http_fast(gofile_source_url, out_dir, status)
-    if "gofile.io" in source.lower():
+    if is_gofile_share_url(source):
+        errors = []
+        for backend_name, backend in (
+            ("gofile-dl", download_with_gofile_dl),
+            ("gofile-api", download_with_gofile_api_library),
+        ):
+            try:
+                return await backend(source, out_dir, status)
+            except Exception as e:
+                errors.append(f"{backend_name}: {str(e)[:220]}")
+        try:
+            gofile_source_url = await resolve_gofile_page_source_url(source, status)
+            if gofile_source_url:
+                return await download_direct_http_fast(gofile_source_url, out_dir, status)
+        except Exception as e:
+            errors.append(f"native: {str(e)[:220]}")
         raise RuntimeError(
-            "Could not resolve this GoFile link without yt-dlp. If it is a video page, open it in "
-            "Chrome and send the direct video address from the player/source tag instead."
+            "Could not resolve this GoFile link without yt-dlp. Tried gofile-dl, gofile-api, "
+            f"and native resolver. Details: {' | '.join(errors) or 'no backend details'}"
         )
 
     if looks_like_ytdlp_source(source):

@@ -79,7 +79,7 @@ Torrent and magnet support requires `aria2c` on the runtime image. The included 
 
 ## Multi-Site Leeching (yt-dlp)
 
-`/leech` recognizes links from YouTube, Twitter/X, Instagram, TikTok, Reddit, Facebook, SoundCloud, Vimeo, Dailymotion, Twitch, and many other sites and routes them through `yt-dlp`, which is already listed in `requirements.txt`. GoFile links are resolved by the bot without yt-dlp; set `GOFILE_API_TOKEN` for reliable `gofile.io/d/...` share-page resolution. If `yt-dlp` isn't installed on your deployment, those links fail with a clear message telling you to add it and redeploy; plain direct-file URLs and torrents/magnets are unaffected either way.
+`/leech` recognizes links from YouTube, Twitter/X, Instagram, TikTok, Reddit, Facebook, SoundCloud, Vimeo, Dailymotion, Twitch, and many other sites and routes them through `yt-dlp`, which is already listed in `requirements.txt`. GoFile links are resolved by the bot without yt-dlp; it tries the optional `gofile-dl` CLI, the optional `gofile-api` library resolver, and then the built-in resolver. Set `GOFILE_API_TOKEN` for reliable `gofile.io/d/...` share-page resolution. If `yt-dlp` isn't installed on your deployment, those links fail with a clear message telling you to add it and redeploy; plain direct-file URLs and torrents/magnets are unaffected either way.
 
 ## Faster Leeching
 
