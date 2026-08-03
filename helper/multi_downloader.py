@@ -64,7 +64,8 @@ _VIDEO_SRC_RE = re.compile(
     r"<video\b[^>]*\bsrc\s*=\s*([\"\'])(?P<url>https?://[^\"\']+)\1",
     re.IGNORECASE,
 )
-_GOFILE_WT_RE = re.compile(r"(?:appdata\.wt|wt)\s*[:=]\s*['\"](?P<wt>[a-zA-Z0-9_-]+)['\"]")
+_GOFILE_WT_RE = re.compile(r'(?:appdata\.wt|websiteToken|xWebsiteToken|wt)\s*[:=]\s*[\'"](?P<wt>[a-zA-Z0-9_-]+)[\'"]')
+_SCRIPT_SRC_RE = re.compile(r"<script\b[^>]*\bsrc\s*=\s*([\"\'])(?P<src>[^\"\']+)\1", re.IGNORECASE)
 _EXTRA_REQUEST_HEADERS: dict[str, dict[str, str]] = {}
 
 
@@ -134,45 +135,92 @@ def _find_gofile_download_url(node) -> str | None:
     return None
 
 
-async def _fetch_gofile_website_token(session: aiohttp.ClientSession) -> str | None:
-    for path in ("/dist/js/global.js", "/dist/js/alljs.js"):
+def _extract_gofile_website_token(text: str | None) -> str | None:
+    if not text:
+        return None
+    match = _GOFILE_WT_RE.search(text)
+    if match:
+        return match.group("wt")
+    # GoFile has changed this value from a short token to a long hex token before;
+    # keep a conservative fallback for assignments close to website-token names.
+    hex_match = re.search(r"(?:website|token|wt)[^a-fA-F0-9]{0,80}([a-fA-F0-9]{32,80})", text, re.IGNORECASE)
+    return hex_match.group(1) if hex_match else None
+
+
+def _gofile_script_urls(html: str) -> list[str]:
+    from urllib.parse import urljoin
+
+    urls = []
+    for match in _SCRIPT_SRC_RE.finditer(html or ""):
+        src = urljoin("https://gofile.io/", match.group("src"))
+        if src.startswith("https://gofile.io/") and src not in urls:
+            urls.append(src)
+    for fallback in ("https://gofile.io/dist/js/global.js", "https://gofile.io/dist/js/alljs.js"):
+        if fallback not in urls:
+            urls.append(fallback)
+    return urls
+
+
+async def _fetch_gofile_website_token(session: aiohttp.ClientSession, html: str | None = None) -> str | None:
+    token = _extract_gofile_website_token(html)
+    if token:
+        return token
+    for script_url in _gofile_script_urls(html or ""):
         try:
-            async with session.get(f"https://gofile.io{path}", timeout=aiohttp.ClientTimeout(total=20)) as resp:
+            async with session.get(script_url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
                 if resp.status != 200:
                     continue
-                match = _GOFILE_WT_RE.search(await resp.text(errors="ignore"))
-                if match:
-                    return match.group("wt")
+                token = _extract_gofile_website_token(await resp.text(errors="ignore"))
+                if token:
+                    return token
         except Exception:
             continue
     return None
 
 
-async def _resolve_gofile_api_url(session: aiohttp.ClientSession, url: str) -> str | None:
+async def _resolve_gofile_api_url(session: aiohttp.ClientSession, url: str, html: str | None = None) -> str | None:
     content_id = _gofile_content_id(url)
     if not content_id:
         return None
 
-    async with session.post("https://api.gofile.io/accounts", timeout=aiohttp.ClientTimeout(total=20)) as resp:
-        resp.raise_for_status()
-        account = await resp.json(content_type=None)
-    token = ((account.get("data") or {}).get("token") or "").strip()
+    token = Config.GOFILE_API_TOKEN
+    if not token:
+        async with session.post("https://api.gofile.io/accounts", timeout=aiohttp.ClientTimeout(total=20)) as resp:
+            resp.raise_for_status()
+            account = await resp.json(content_type=None)
+        token = ((account.get("data") or {}).get("token") or "").strip()
     if not token:
         return None
 
-    wt = await _fetch_gofile_website_token(session)
+    wt = await _fetch_gofile_website_token(session, html)
     params = {"cache": "true"}
+    headers = {"Authorization": f"Bearer {token}"}
     if wt:
         params["wt"] = wt
-    headers = {"Authorization": f"Bearer {token}"}
-    async with session.get(
-        f"https://api.gofile.io/contents/{content_id}",
-        params=params,
-        headers=headers,
-        timeout=aiohttp.ClientTimeout(total=30),
-    ) as resp:
-        resp.raise_for_status()
-        payload = await resp.json(content_type=None)
+        headers["X-Website-Token"] = wt
+    try:
+        async with session.get(
+            f"https://api.gofile.io/contents/{content_id}",
+            params=params,
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(total=30),
+        ) as resp:
+            if resp.status == 401:
+                raise RuntimeError(
+                    "GoFile rejected the metadata request (401 Unauthorized). Set GOFILE_API_TOKEN "
+                    "to a valid GoFile account API token, or send the direct storage/video URL from "
+                    "the page's <source> tag."
+                )
+            resp.raise_for_status()
+            payload = await resp.json(content_type=None)
+    except aiohttp.ClientResponseError as e:
+        if e.status == 401:
+            raise RuntimeError(
+                "GoFile rejected the metadata request (401 Unauthorized). Set GOFILE_API_TOKEN "
+                "to a valid GoFile account API token, or send the direct storage/video URL from "
+                "the page's <source> tag."
+            ) from e
+        raise
     if payload.get("status") != "ok":
         return None
     direct_url = _find_gofile_download_url(payload.get("data"))
@@ -186,6 +234,7 @@ async def resolve_gofile_page_source_url(url: str, status=None) -> str | None:
     if not is_gofile_share_url(url):
         return None
     await _safe_edit(status, "🔎 **Resolving GoFile link without yt-dlp...**")
+    html = None
     async with aiohttp.ClientSession(headers=_request_headers(url)) as session:
         try:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=30), allow_redirects=True) as resp:
@@ -196,7 +245,7 @@ async def resolve_gofile_page_source_url(url: str, status=None) -> str | None:
                 return source_url
         except Exception:
             pass
-        return await _resolve_gofile_api_url(session, url)
+        return await _resolve_gofile_api_url(session, url, html)
 
 
 def is_ytdlp_available() -> bool:
