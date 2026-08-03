@@ -195,7 +195,13 @@ async def _resolve_gofile_api_url(session: aiohttp.ClientSession, url: str, html
 
     wt = await _fetch_gofile_website_token(session, html)
     params = {"cache": "true"}
-    headers = {"Authorization": f"Bearer {token}"}
+    headers = {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {token}",
+        "Cookie": f"accountToken={token}",
+        "Origin": "https://gofile.io",
+        "Referer": url,
+    }
     if wt:
         params["wt"] = wt
         headers["X-Website-Token"] = wt
@@ -210,7 +216,7 @@ async def _resolve_gofile_api_url(session: aiohttp.ClientSession, url: str, html
                 raise RuntimeError(
                     "GoFile rejected the metadata request (401 Unauthorized). Set GOFILE_API_TOKEN "
                     "to a valid GoFile account API token, or send the direct storage/video URL from "
-                    "the page's <source> tag."
+                    "the page source tag."
                 )
             resp.raise_for_status()
             payload = await resp.json(content_type=None)
@@ -219,7 +225,7 @@ async def _resolve_gofile_api_url(session: aiohttp.ClientSession, url: str, html
             raise RuntimeError(
                 "GoFile rejected the metadata request (401 Unauthorized). Set GOFILE_API_TOKEN "
                 "to a valid GoFile account API token, or send the direct storage/video URL from "
-                "the page's <source> tag."
+                "the page source tag."
             ) from e
         raise
     if payload.get("status") != "ok":
@@ -379,6 +385,11 @@ async def download_with_gofile_dl(source: str, out_dir: Path, status) -> Path:
             await _safe_edit(status, f"☁️ **gofile-dl running...**\n```{tail[-700:]}```")
     code = await proc.wait()
     if code != 0:
+        if "api.gofile.io/createAccount" in tail:
+            raise RuntimeError(
+                "installed gofile-dl package is using GoFile's removed /createAccount endpoint; "
+                "the bot will fall back to other GoFile resolvers"
+            )
         raise RuntimeError(f"gofile-dl failed with exit code {code}: {tail[-700:]}")
     downloaded = _latest_downloaded_file(out_dir, started)
     if not downloaded:

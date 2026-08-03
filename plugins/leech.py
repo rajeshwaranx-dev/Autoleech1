@@ -325,22 +325,27 @@ async def route_download(source: str, out_dir: Path, status: Message) -> Path:
     if is_gofile_share_url(source):
         errors = []
         for backend_name, backend in (
+            ("native", None),
             ("gofile-dl", download_with_gofile_dl),
             ("gofile-api", download_with_gofile_api_library),
         ):
             try:
+                if backend is None:
+                    gofile_source_url = await resolve_gofile_page_source_url(source, status)
+                    if gofile_source_url:
+                        return await download_direct_http_fast(gofile_source_url, out_dir, status)
+                    raise RuntimeError("did not return a direct download URL")
                 return await backend(source, out_dir, status)
             except Exception as e:
-                errors.append(f"{backend_name}: {str(e)[:220]}")
-        try:
-            gofile_source_url = await resolve_gofile_page_source_url(source, status)
-            if gofile_source_url:
-                return await download_direct_http_fast(gofile_source_url, out_dir, status)
-        except Exception as e:
-            errors.append(f"native: {str(e)[:220]}")
+                detail = str(e)[:220]
+                if backend_name == "gofile-dl" and "removed /createAccount endpoint" in detail:
+                    # This is a known old gofile-dl release failure; keep it out of the
+                    # user-facing combined error unless every backend fails.
+                    detail = "installed package is outdated and calls GoFile's removed /createAccount endpoint"
+                errors.append(f"{backend_name}: {detail}")
         raise RuntimeError(
-            "Could not resolve this GoFile link without yt-dlp. Tried gofile-dl, gofile-api, "
-            f"and native resolver. Details: {' | '.join(errors) or 'no backend details'}"
+            "Could not resolve this GoFile link without yt-dlp. Tried native resolver, gofile-dl, "
+            f"and gofile-api. Details: {' | '.join(errors) or 'no backend details'}"
         )
 
     if looks_like_ytdlp_source(source):
