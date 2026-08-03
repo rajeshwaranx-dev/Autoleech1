@@ -41,6 +41,7 @@ class Config(object):
     MAX_UPLOAD_SIZE_GB_ENV = os.environ.get("MAX_UPLOAD_SIZE_GB")
     MAX_UPLOAD_SIZE = int(float(MAX_UPLOAD_SIZE_GB_ENV or "2") * 1024 * 1024 * 1024)
     PREMIUM_SESSION_STRING = os.environ.get("PREMIUM_SESSION_STRING", "")
+    GOFILE_API_TOKEN = os.environ.get("GOFILE_API_TOKEN", "").strip()
     # Telegram's real platform ceiling is 2GB per file for a regular account (bot or
     # user session alike) and 4GB only if the account behind PREMIUM_SESSION_STRING
     # genuinely has an active Telegram Premium subscription -- the session string alone
