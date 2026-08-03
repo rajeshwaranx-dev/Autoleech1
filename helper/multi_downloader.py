@@ -357,13 +357,14 @@ async def download_with_gofile_dl(source: str, out_dir: Path, status) -> Path:
     if not exe:
         raise RuntimeError("gofile-dl is not installed on this deployment.")
     await _safe_edit(status, "☁️ **Downloading GoFile link with gofile-dl...**")
-    cmd = [exe, "--output-dir", str(out_dir)]
-    if Config.GOFILE_API_TOKEN:
-        cmd.extend(["--token", Config.GOFILE_API_TOKEN])
-    cmd.append(source)
+    # gofile-dl's standard usage is just `gofile-dl <url>`; it creates/uses a
+    # guest account by default when no token is supplied. Run it from the job
+    # directory instead of relying on package-specific output flags, so both the
+    # simple documented invocation and our existing upload pipeline stay aligned.
+    cmd = [exe, source]
     started = time.time()
     proc = await asyncio.create_subprocess_exec(
-        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, cwd=out_dir
     )
     tail = ""
     last_edit = 0.0
