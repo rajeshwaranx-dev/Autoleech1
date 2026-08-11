@@ -11,3 +11,5 @@ aiohttp
 pytz
 requests
 yt-dlp
+gofile-dl
+gofile-api
