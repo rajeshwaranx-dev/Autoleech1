@@ -1,4 +1,4 @@
-# MNTGX Power Downloader Bot
+# Mn Auto Leech Bot
 
 A Pyrogram-based Telegram downloader/leech bot optimized for Heroku/Docker. It monitors source channels, renames and brands files, persists queue jobs, downloads direct links/torrents/magnets/YouTube-and-social-site links, and uploads with rich inline callbacks and progress updates.
 
