@@ -97,6 +97,3 @@ Telegram Bot API uploads are usually limited to 2GB. When `PREMIUM_SESSION_STRIN
 4. Install Python requirements and system packages: `ffmpeg`, `aria2c`, and DejaVu fonts. If you deploy via the "Deploy to Heroku" button, `app.json` now adds `heroku-community/apt` before `heroku/python` automatically. If you deploy via `git push heroku` / Heroku CLI instead, run `heroku buildpacks:add --index 1 heroku-community/apt` once so it installs before the Python buildpack. Set `BASE_URL` to your Heroku app URL to enable `/link` and the internal link-based Telegram fetch.
 5. Start with `python bot.py` or deploy with the included `Procfile`.
 
-## Notes
-
-Only add trusted admins. Leeching public torrents may be subject to your host's acceptable-use policy and local law.
