@@ -7,15 +7,15 @@ id_pattern = re.compile(r'^\d+$')
 
 class Config(object):
     # Pyrogram client config
-    API_ID = os.environ.get("API_ID", "")
-    API_HASH = os.environ.get("API_HASH", "")
+    API_ID = os.environ.get("API_ID", "23361081")
+    API_HASH = os.environ.get("API_HASH", "0605c5395b91ead763072251e20c3417")
     
     # Fixing BOT_TOKENS extraction from environment
-    BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+    BOT_TOKEN = os.environ.get("BOT_TOKEN", "7129661875:AAGwTIeTMNqZlxfcitOZzBFMHkX6BKWxkA4")
 
     # Database config
     DB_NAME = os.environ.get("DB_NAME", "Cluster0")
-    DB_URL = os.environ.get("DB_URL", "")
+    DB_URL = os.environ.get("DB_URL", "mongodb+srv://rkbotz:rkbot@cluster0.rmbxxy8.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
     BOT_UPTIME = time.time()
     GLOBAL_THUMBNAIL_URL = os.environ.get("GLOBAL_THUMBNAIL_URL", "https://i.ibb.co/MDwd1f3D/6087047735061627461.jpg")
     START_PIC = os.environ.get("START_PIC", "https://i.ibb.co/MDwd1f3D/6087047735061627461.jpg")
@@ -23,11 +23,11 @@ class Config(object):
 
     # Channels logs
     FORCE_SUB = os.environ.get("FORCE_SUB", "")
-    LOG_CHANNEL = int(os.environ.get("LOG_CHANNEL", "-1002345447637"))
+    LOG_CHANNEL = int(os.environ.get("LOG_CHANNEL", "-1003918578835"))
 
     # Webhook response configuration     
     WEBHOOK = bool(int(os.environ.get("WEBHOOK", True)))
-    PORT = os.environ.get("PORT", "8080") # Use 1 for True (instead of True/False)
+    PORT = os.environ.get("PORT", "8155") # Use 1 for True (instead of True/False)
     BASE_URL = os.environ.get("BASE_URL", "")
     KEEP_ALIVE = bool(int(os.environ.get("KEEP_ALIVE", "1")))
     KEEP_ALIVE_URL = os.environ.get("KEEP_ALIVE_URL", BASE_URL).rstrip("/")
@@ -55,8 +55,8 @@ class Config(object):
             return cls.MAX_UPLOAD_SIZE
         return (4 if cls.PREMIUM_SESSION_STRING else 2) * 1024 * 1024 * 1024
     ENABLE_MEDIA_BRANDING = bool(int(os.environ.get("ENABLE_MEDIA_BRANDING", "1")))
-    WATERMARK_TEXT = os.environ.get("WATERMARK_TEXT", "Join @MNTGX in Telegram")
-    METADATA_TEXT = os.environ.get("METADATA_TEXT", "Join @MNTGX in Telegram")
+    WATERMARK_TEXT = os.environ.get("WATERMARK_TEXT", "Join @AskBotz in Telegram")
+    METADATA_TEXT = os.environ.get("METADATA_TEXT", "Join @AskBotz in Telegram")
     SEND_COVER_BEFORE_UPLOAD = bool(int(os.environ.get("SEND_COVER_BEFORE_UPLOAD", "0")))
     CLEAN_DOWNLOADS = bool(int(os.environ.get("CLEAN_DOWNLOADS", "1")))
     ARIA2_SPLIT = min(16, max(1, int(os.environ.get("ARIA2_SPLIT", "6"))))
