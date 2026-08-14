@@ -15,7 +15,7 @@ class Config(object):
 
     # Database config
     DB_NAME = os.environ.get("DB_NAME", "Cluster0")
-    DB_URL = os.environ.get("DB_URL", "mongodb+srv://rkbotz:rkbot@cluster0.rmbxxy8.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
+    DB_URL = os.environ.get("DB_URL", "mongodb+srv://rajesh1162005_db_user:rajesh@cluster0.mmj0wxj.mongodb.net/?appName=Cluster0")
     BOT_UPTIME = time.time()
     GLOBAL_THUMBNAIL_URL = os.environ.get("GLOBAL_THUMBNAIL_URL", "https://i.ibb.co/MDwd1f3D/6087047735061627461.jpg")
     START_PIC = os.environ.get("START_PIC", "https://i.ibb.co/MDwd1f3D/6087047735061627461.jpg")
